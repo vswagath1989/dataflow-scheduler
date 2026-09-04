@@ -128,6 +128,43 @@ auto reductionKindOf(mlir::Value yielded) -> llvm::StringRef {
   return "absmax";
 }
 
+// Rewrite helper: ktdf.with_precision(op, params) → DictionaryAttr
+//
+// Adds to \p params the precision a template's `mode` field takes, read off the
+// element type \p op accumulates in. Fails for a type no template names, so the
+// compute is left alone rather than lowered at the wrong width.
+auto ktdfWithPrecision(mlir::PatternRewriter& rewriter,
+                       mlir::PDLResultList& results,
+                       llvm::ArrayRef<mlir::PDLValue> values)
+    -> mlir::LogicalResult {
+  assert(values.size() == 2);
+  auto written = llvm::dyn_cast_if_present<mlir::DestinationStyleOpInterface>(
+      values[0].cast<mlir::Operation*>());
+  if (!written || written.getDpsInits().empty()) return mlir::failure();
+  auto params = llvm::dyn_cast_if_present<mlir::DictionaryAttr>(
+      values[1].cast<mlir::Attribute>());
+  if (!params) return mlir::failure();
+
+  auto accumulator =
+      llvm::dyn_cast<mlir::ShapedType>(written.getDpsInits().front().getType());
+  if (!accumulator) return mlir::failure();
+
+  const mlir::Type element = accumulator.getElementType();
+  llvm::StringRef precision;
+  if (element.isF16()) {
+    precision = "fp16";
+  } else if (element.isF32()) {
+    precision = "fp32";
+  } else {
+    return mlir::failure();
+  }
+
+  mlir::NamedAttrList named(params);
+  named.set("prec", rewriter.getStringAttr(precision));
+  results.push_back(named.getDictionary(rewriter.getContext()));
+  return mlir::success();
+}
+
 // Constraint: ktdf.is_reduction_kind(op, expected_kind)
 //
 // Expected `values` entries (in order):
@@ -173,6 +210,7 @@ class PatternCache : public mlir::ktdf_arch::PatternCache {
     patterns.registerConstraintFunction("ktdf.is_reduction_kind",
                                         ktdfIsReductionKind);
     patterns.registerRewriteFunction("ktdf.subview_source", ktdfSubviewSource);
+    patterns.registerRewriteFunction("ktdf.with_precision", ktdfWithPrecision);
   }
 
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(PatternCache)
