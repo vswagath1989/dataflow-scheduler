@@ -581,11 +581,16 @@ struct LowerSignalPattern
   }
 };
 
-/// Lower a memref.copy whose source is a ktdf.read_from_fifo (memref form).
+/// Lower a memref.copy that MapReductionPartials emitted.
 ///
-/// MapReductionPartials emits:
+/// Two sources reach here. A fifo read is already a value, so it is stored
+/// straight into the destination:
 ///   %r  = ktdf.read_from_fifo ... -> memref<...>
 ///   memref.copy %r, %dest
+///
+/// A buffer is not, so it is loaded first -- which is how a reduction's
+/// accumulator is copied from the buffer holding its identity:
+///   memref.copy %identity, %accumulator
 ///
 /// Runs at higher benefit (2) than FoldEmptyCopy (1, a canonicalization
 /// pattern) so it fires first, preventing FoldEmptyCopy from crashing on
@@ -601,12 +606,20 @@ struct LowerMemRefCopyFromFifoPattern
   mlir::LogicalResult matchAndRewrite(
       mlir::memref::CopyOp copy_op,
       mlir::PatternRewriter& rewriter) const override {
-    if (!copy_op.getSource().getDefiningOp<mlir::ktdf::ReadFromFifoOp>())
-      return mlir::failure();
-
     rewriter.setInsertionPoint(copy_op);
-    emitVectorStore(rewriter, copy_op.getLoc(), copy_op.getSource(),
-                    copy_op.getTarget());
+    const mlir::Location loc = copy_op.getLoc();
+
+    mlir::Value stored = copy_op.getSource();
+    if (!stored.getDefiningOp<mlir::ktdf::ReadFromFifoOp>()) {
+      const auto buffer = llvm::dyn_cast<mlir::MemRefType>(stored.getType());
+      if (!buffer || !buffer.hasStaticShape()) return mlir::failure();
+      stored = emitVectorLoad(rewriter, loc,
+                              mlir::VectorType::get({buffer.getNumElements()},
+                                                    buffer.getElementType()),
+                              stored);
+    }
+
+    emitVectorStore(rewriter, loc, stored, copy_op.getTarget());
     rewriter.eraseOp(copy_op);
     return mlir::success();
   }
