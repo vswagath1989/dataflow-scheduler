@@ -258,8 +258,19 @@ static LogicalResult lowerIterArgInitializer(Value init_val, Value alloc_val,
     Location loc = empty_op.getLoc();
     Value neutral_val =
         arith::ConstantOp::create(builder, loc, neutral.value());
+
+    // The identity goes to a buffer of its own, which the accumulator is then
+    // copied from. Filling the accumulator directly would put the value in the
+    // copy instruction's immediate, and that field is too narrow for a 32-bit
+    // one. A buffer written once and never read back is invariant, so what
+    // hoists such a write can lift it to where a register is initialised
+    // instead -- which carries the whole value.
+    auto identity = memref::AllocOp::create(
+        builder, loc, cast<MemRefType>(alloc_val.getType()));
     linalg::FillOp::create(builder, loc, ValueRange{neutral_val},
-                           ValueRange{alloc_val});
+                           ValueRange{identity.getResult()});
+    memref::CopyOp::create(builder, loc, identity.getResult(), alloc_val);
+
     empty_op->erase();
     return success();
   }

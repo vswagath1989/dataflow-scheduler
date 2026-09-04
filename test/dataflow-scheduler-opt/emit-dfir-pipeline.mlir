@@ -45,6 +45,12 @@
 // CHECK-NEXT:   split-reduction-inner-outer-dim
 // CHECK-NEXT:   reduction-loop-exposure
 // CHECK-NEXT:   map-reduction-partials
+// CHECK-NEXT:   builtin.module(
+// CHECK-NEXT:   func.func(
+// CHECK-NEXT:   hoist-invariants
+// CHECK-NEXT:   hoist-constant-storage
+// CHECK-NEXT:   )
+// CHECK-NEXT:   )
 // CHECK-NEXT:   broadcast-promotion
 // CHECK-NEXT:   double-buffering
 // CHECK-NEXT:   parallelize-loops-across-instances

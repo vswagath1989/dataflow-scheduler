@@ -59,7 +59,9 @@
 // CHECK-NEXT:                 %[[ALLOC_2:.*]] = memref.alloc() : memref<1x64xf16, "SFU_REG">
 // CHECK-NEXT:                 scf.if %[[CMPI_INIT]] {
 // CHECK-NEXT:                   %[[CONSTANT_8:.*]] = arith.constant 0.000000e+00 : f16
-// CHECK-NEXT:                   linalg.fill ins(%[[CONSTANT_8]] : f16) outs(%[[ALLOC_2]] : memref<1x64xf16, "SFU_REG">)
+// CHECK-NEXT:                   %[[IDENTITY:.*]] = memref.alloc() : memref<1x64xf16, "SFU_REG">
+// CHECK-NEXT:                   linalg.fill ins(%[[CONSTANT_8]] : f16) outs(%[[IDENTITY]] : memref<1x64xf16, "SFU_REG">)
+// CHECK-NEXT:                   memref.copy %[[IDENTITY]], %[[ALLOC_2]] : memref<1x64xf16, "SFU_REG"> to memref<1x64xf16, "SFU_REG">
 // CHECK-NEXT:                 } else {
 // CHECK-NEXT:                   %[[READ_INIT:.*]] = ktdf.read_from_fifo %[[VAL_6]]#0 : <"L1LU" -> "SFU", 64xf16> -> memref<1x64xf16>
 // CHECK-NEXT:                   memref.copy %[[READ_INIT]], %[[ALLOC_2]] : memref<1x64xf16> to memref<1x64xf16, "SFU_REG">

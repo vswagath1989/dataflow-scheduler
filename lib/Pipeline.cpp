@@ -88,6 +88,15 @@ void scheduler::buildSchedulerOptimizationPipeline(
   pm.addPass(mlir::ktdf::createSplitReductionInnerOuterDimPass());
   pm.addPass(mlir::ktdf::createReductionLoopExposurePass());
   pm.addPass(mlir::ktdf::createMapReductionPartialsPass());
+  // The pass above writes a reduction's identity into a buffer of its own and
+  // copies the accumulator from it, and can only insert where the reduction is.
+  // Hoisting lifts that write clear of the loop, which is what lets it become a
+  // register's initial value rather than an immediate.
+  {
+    auto& nested = pm.nest<mlir::ModuleOp>().nest<mlir::func::FuncOp>();
+    nested.addPass(createHoistInvariantsPass());
+    nested.addPass(createHoistConstantStoragePass());
+  }
   pm.addPass(mlir::ktdf::createBroadcastPromotionPass());
   pm.addPass(createDoubleBufferingPass(scheduler_ctx));
   // Parallelizing before tile selection is beneficial because the tile size

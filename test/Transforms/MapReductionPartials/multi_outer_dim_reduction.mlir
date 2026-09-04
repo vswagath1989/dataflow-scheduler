@@ -57,7 +57,9 @@
 // CHECK-NEXT:               ktdf.stage depends_in(%[[VAL_7:.*]]#2) depends_out(%[[VAL_7]]#3) {
 // CHECK-NEXT:                 %[[ALLOC_2:.*]] = memref.alloc() : memref<64xf16, "SFU_REG">
 // CHECK-NEXT:                 %[[CONSTANT_10:.*]] = arith.constant 0.000000e+00 : f16
-// CHECK-NEXT:                 linalg.fill ins(%[[CONSTANT_10]] : f16) outs(%[[ALLOC_2]] : memref<64xf16, "SFU_REG">)
+// CHECK-NEXT:                 %[[IDENTITY:.*]] = memref.alloc() : memref<64xf16, "SFU_REG">
+// CHECK-NEXT:                 linalg.fill ins(%[[CONSTANT_10]] : f16) outs(%[[IDENTITY]] : memref<64xf16, "SFU_REG">)
+// CHECK-NEXT:                 memref.copy %[[IDENTITY]], %[[ALLOC_2]] : memref<64xf16, "SFU_REG"> to memref<64xf16, "SFU_REG">
 // CHECK-NEXT:                 %[[CONSTANT_11:.*]] = arith.constant 2 : index
 // CHECK-NEXT:                 %[[CONSTANT_12:.*]] = arith.constant 256 : index
 // CHECK-NEXT:                 scf.for %[[VAL_8:.*]] = %[[CONSTANT_4]] to %[[CONSTANT_11]] step %[[CONSTANT_5]] {

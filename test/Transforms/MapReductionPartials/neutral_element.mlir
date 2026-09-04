@@ -5,26 +5,32 @@
 
 // CHECK-LABEL: func.func @mulf_reduction
 // CHECK:         arith.constant 1.000000e+00 : f16
+// CHECK-NEXT:    memref.alloc
 // CHECK-NEXT:    linalg.fill
 
 // CHECK-LABEL: func.func @maximumf_reduction
 // CHECK:         arith.constant 0xFC00 : f16
+// CHECK-NEXT:    memref.alloc
 // CHECK-NEXT:    linalg.fill
 
 // CHECK-LABEL: func.func @minimumf_reduction
 // CHECK:         arith.constant 0x7C00 : f16
+// CHECK-NEXT:    memref.alloc
 // CHECK-NEXT:    linalg.fill
 
 // CHECK-LABEL: func.func @subf_reduction
 // CHECK:         arith.constant 0.000000e+00 : f16
+// CHECK-NEXT:    memref.alloc
 // CHECK-NEXT:    linalg.fill
 
 // CHECK-LABEL: func.func @absmax_reduction
 // CHECK:         arith.constant 0.000000e+00 : f16
+// CHECK-NEXT:    memref.alloc
 // CHECK-NEXT:    linalg.fill
 
 // CHECK-LABEL: func.func @addi_reduction
 // CHECK:         arith.constant 0 : i16
+// CHECK-NEXT:    memref.alloc
 // CHECK-NEXT:    linalg.fill
 
 #map = affine_map<(d0, d1, d2) -> (d0, d1, d2)>
