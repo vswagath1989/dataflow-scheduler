@@ -160,6 +160,13 @@ struct LowerLinalgGenericPattern
                     op, op.getLhs(), op.getRhs(), rewriter, identity_map,
                     mlir::vectorchain::VectorChainBinaryOperator::min, compute);
               })
+              .Case<mlir::arith::MinNumFOp>([&](mlir::arith::MinNumFOp op) {
+                // A plain min: there is no absolute-min operator for the
+                // abs-of-both shape that maxnumf has.
+                return lowerBinaryFOp(
+                    op, op.getLhs(), op.getRhs(), rewriter, identity_map,
+                    mlir::vectorchain::VectorChainBinaryOperator::min);
+              })
               .Case<mlir::arith::MaxNumFOp>([&](mlir::arith::MaxNumFOp op) {
                 mlir::Value lhs, rhs;
                 if (matchAbsMaxOperands(op, lhs, rhs)) {
@@ -305,6 +312,13 @@ struct LowerLinalgGenericPattern
                 return lowerBinaryFOp(
                     op, op.getLhs(), op.getRhs(), rewriter, identity_map,
                     mlir::vectorchain::VectorChainBinaryOperator::min, compute);
+              })
+              .Case<mlir::arith::MinNumFOp>([&](mlir::arith::MinNumFOp op) {
+                // A plain min: there is no absolute-min operator for the
+                // abs-of-both shape that maxnumf has.
+                return lowerBinaryFOp(
+                    op, op.getLhs(), op.getRhs(), rewriter, identity_map,
+                    mlir::vectorchain::VectorChainBinaryOperator::min);
               })
               .Case<mlir::memref::StoreOp>([&](mlir::memref::StoreOp op) {
                 return lowerMemRefStore(op, rewriter);
