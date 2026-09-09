@@ -130,9 +130,14 @@ auto reductionKindOf(mlir::Value yielded) -> llvm::StringRef {
 
 // Rewrite helper: ktdf.with_precision(op, params) → DictionaryAttr
 //
-// Adds to \p params the precision a template's `mode` field takes, read off the
-// element type \p op accumulates in. Fails for a type no template names, so the
-// compute is left alone rather than lowered at the wrong width.
+// Expected `values` entries, two of them in this order:
+//   [0] mlir::Operation*  — the op whose accumulator gives the element type
+//   [1] mlir::Attribute   — the DictionaryAttr to add the precision to
+//
+// Adds to those parameters the precision a template's `mode` field takes, read
+// off the element type the op accumulates in, and leaves the rest of them
+// alone. Fails for a type no template names, so the compute is left as it is
+// rather than lowered at the wrong width.
 auto ktdfWithPrecision(mlir::PatternRewriter& rewriter,
                        mlir::PDLResultList& results,
                        llvm::ArrayRef<mlir::PDLValue> values)

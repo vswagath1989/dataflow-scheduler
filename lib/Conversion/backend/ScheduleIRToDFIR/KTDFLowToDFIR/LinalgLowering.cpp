@@ -69,7 +69,6 @@ static bool matchAbsMaxOperands(mlir::arith::MaxNumFOp maxnum_op,
   return true;
 }
 
-/// Pattern to lower linalg.generic compute operations
 /// Gets the compare operator standing for \p predicate, or nothing where the
 /// unit has none. Only the ordered predicates map: an unordered one asks about
 /// NaN, which the compare does not answer.
@@ -95,6 +94,7 @@ static bool matchAbsMaxOperands(mlir::arith::MaxNumFOp maxnum_op,
   }
 }
 
+/// Pattern to lower linalg.generic compute operations
 struct LowerLinalgGenericPattern
     : public mlir::OpRewritePattern<mlir::linalg::GenericOp> {
   LowerLinalgGenericPattern(mlir::MLIRContext* context,
@@ -186,8 +186,10 @@ struct LowerLinalgGenericPattern
                     mlir::vectorchain::VectorChainBinaryOperator::min, compute);
               })
               .Case<mlir::arith::MinNumFOp>([&](mlir::arith::MinNumFOp op) {
-                // A plain min: there is no absolute-min operator for the
-                // abs-of-both shape that maxnumf has.
+                // The unit has one minimum, and minnumf differs from minimumf
+                // only in which operand a NaN takes, so both map to it and
+                // neither is exact where one is NaN. maxnumf and maximumf
+                // already map this way.
                 return lowerBinaryFOp(
                     op, op.getLhs(), op.getRhs(), rewriter, identity_map,
                     mlir::vectorchain::VectorChainBinaryOperator::min);
@@ -345,8 +347,10 @@ struct LowerLinalgGenericPattern
                     mlir::vectorchain::VectorChainBinaryOperator::min, compute);
               })
               .Case<mlir::arith::MinNumFOp>([&](mlir::arith::MinNumFOp op) {
-                // A plain min: there is no absolute-min operator for the
-                // abs-of-both shape that maxnumf has.
+                // The unit has one minimum, and minnumf differs from minimumf
+                // only in which operand a NaN takes, so both map to it and
+                // neither is exact where one is NaN. maxnumf and maximumf
+                // already map this way.
                 return lowerBinaryFOp(
                     op, op.getLhs(), op.getRhs(), rewriter, identity_map,
                     mlir::vectorchain::VectorChainBinaryOperator::min);

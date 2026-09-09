@@ -612,7 +612,14 @@ struct LowerMemRefCopyFromFifoPattern
     mlir::Value stored = copy_op.getSource();
     if (!stored.getDefiningOp<mlir::ktdf::ReadFromFifoOp>()) {
       const auto buffer = llvm::dyn_cast<mlir::MemRefType>(stored.getType());
-      if (!buffer || !buffer.hasStaticShape()) return mlir::failure();
+      if (!buffer) {
+        return rewriter.notifyMatchFailure(
+            copy_op, "source is neither a fifo read nor a memref");
+      }
+      if (!buffer.hasStaticShape()) {
+        return rewriter.notifyMatchFailure(
+            copy_op, "source has no static shape to load as one vector");
+      }
       stored = emitVectorLoad(rewriter, loc,
                               mlir::VectorType::get({buffer.getNumElements()},
                                                     buffer.getElementType()),
