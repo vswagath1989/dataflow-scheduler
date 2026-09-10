@@ -185,15 +185,6 @@ struct LowerLinalgGenericPattern
                     op, op.getLhs(), op.getRhs(), rewriter, identity_map,
                     mlir::vectorchain::VectorChainBinaryOperator::min, compute);
               })
-              .Case<mlir::arith::MinNumFOp>([&](mlir::arith::MinNumFOp op) {
-                // The unit has one minimum, and minnumf differs from minimumf
-                // only in which operand a NaN takes, so both map to it and
-                // neither is exact where one is NaN. maxnumf and maximumf
-                // already map this way.
-                return lowerBinaryFOp(
-                    op, op.getLhs(), op.getRhs(), rewriter, identity_map,
-                    mlir::vectorchain::VectorChainBinaryOperator::min);
-              })
               .Case<mlir::arith::CmpFOp>([&](mlir::arith::CmpFOp op) {
                 return lowerCompareFOp(op, rewriter);
               })
@@ -219,9 +210,14 @@ struct LowerLinalgGenericPattern
                   }
                   return res;
                 }
-                return lowerBinaryFOp(
-                    op, op.getLhs(), op.getRhs(), rewriter, identity_map,
-                    mlir::vectorchain::VectorChainBinaryOperator::max, compute);
+                // Only the abs-of-both shape lowers. maxnumf and minnumf
+                // are the withdrawn 754-2008 operations, whose handling of NaN
+                // and of signed zero is left to the implementation, and what
+                // this unit does is not written down -- so mapping them to a
+                // plain max or min would be a guess. minimumf and maximumf say
+                // what they mean and are lowered instead.
+                return rewriter.notifyMatchFailure(
+                    op, "maxnumf outside the abs-max shape is not lowered");
               })
               .Case<mlir::math::AbsFOp>([&](mlir::math::AbsFOp op)
                                             -> mlir::LogicalResult {
@@ -346,15 +342,6 @@ struct LowerLinalgGenericPattern
                     op, op.getLhs(), op.getRhs(), rewriter, identity_map,
                     mlir::vectorchain::VectorChainBinaryOperator::min, compute);
               })
-              .Case<mlir::arith::MinNumFOp>([&](mlir::arith::MinNumFOp op) {
-                // The unit has one minimum, and minnumf differs from minimumf
-                // only in which operand a NaN takes, so both map to it and
-                // neither is exact where one is NaN. maxnumf and maximumf
-                // already map this way.
-                return lowerBinaryFOp(
-                    op, op.getLhs(), op.getRhs(), rewriter, identity_map,
-                    mlir::vectorchain::VectorChainBinaryOperator::min);
-              })
               .Case<mlir::arith::CmpFOp>([&](mlir::arith::CmpFOp op) {
                 return lowerCompareFOp(op, rewriter);
               })
@@ -382,9 +369,14 @@ struct LowerLinalgGenericPattern
                   }
                   return res;
                 }
-                return lowerBinaryFOp(
-                    op, op.getLhs(), op.getRhs(), rewriter, identity_map,
-                    mlir::vectorchain::VectorChainBinaryOperator::max, compute);
+                // Only the abs-of-both shape lowers. maxnumf and minnumf
+                // are the withdrawn 754-2008 operations, whose handling of NaN
+                // and of signed zero is left to the implementation, and what
+                // this unit does is not written down -- so mapping them to a
+                // plain max or min would be a guess. minimumf and maximumf say
+                // what they mean and are lowered instead.
+                return rewriter.notifyMatchFailure(
+                    op, "maxnumf outside the abs-max shape is not lowered");
               })
               .Case<mlir::math::AbsFOp>([&](mlir::math::AbsFOp op)
                                             -> mlir::LogicalResult {

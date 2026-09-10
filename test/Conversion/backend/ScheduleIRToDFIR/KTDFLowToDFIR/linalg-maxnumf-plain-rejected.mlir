@@ -1,15 +1,15 @@
-// RUN: dataflow-scheduler-opt -pass-pipeline="builtin.module(ktdflowering-to-dfir)" %s | FileCheck %s
+// RUN: not dataflow-scheduler-opt -pass-pipeline="builtin.module(ktdflowering-to-dfir)" %s 2>&1 | FileCheck %s
 
-// Tests that arith.minnumf lowers to the min binary operator. It was accepted by
-// the frontend legality check and had no lowering, so a body using it got as far
-// as here and then said only "unsupported operation type in linalg.generic body".
+// maxnumf on its own is not lowered, and neither is minnumf: they are the
+// withdrawn 754-2008 operations, which leave NaN and signed-zero handling to the
+// implementation, and what this unit does with either is not written down. Mapping
+// them to a plain max or min would be a guess, so they are turned away and
+// minimumf and maximumf -- which say what they mean -- are lowered instead.
 //
-// There is no absolute-min operator, so minnumf has no second shape to select the
-// way maxnumf picks abs_max for the abs-of-both case.
+// absf(x) maxnumf absf(y) still lowers, to abs_max; linalg-maxnumf-lowering covers
+// it.
 
-// CHECK-LABEL: func.func @minnumf_plain
-// CHECK: vectorchain.binary
-// CHECK-SAME: binary_op = #vectorchain<binary_operator min>
+// CHECK: error: failed to run operation lowerings for maxnumf_plain
 
 #map_in  = affine_map<(d0, d1, d2) -> (d0, d1, d2)>
 #map_out = affine_map<(d0, d1, d2) -> (d0, d2)>
@@ -17,8 +17,8 @@
 module {
   ktdf_arch.device @sample_device attributes {} import("../../../../Dialect/KTDFArch/sample_device.mlir")
 
-  // ── minnumf: lowers to min ─────────────────────────────────────────────────
-  func.func @minnumf_plain() attributes {grid = [2]} {
+  // ── plain maxnumf: turned away ─────────────────────────────────────────────
+  func.func @maxnumf_plain() attributes {grid = [2]} {
     %l1lu0 = dataflow.get_unit {core = 0 : i32, name = "C0-L1LU", type = "L1LU"} : index
     %l1lu1 = dataflow.get_unit {core = 1 : i32, name = "C1-L1LU", type = "L1LU"} : index
     %sfu0  = dataflow.get_unit {core = 0 : i32, name = "C0-SFU",  type = "SFU"}  : index
@@ -51,7 +51,7 @@ module {
           iterator_types = ["parallel", "reduction", "parallel"]
         } ins(%input : memref<1x1x64xf16>) outs(%alloc : memref<1x64xf16, "SFU_REG">) {
         ^bb0(%in: f16, %out: f16):
-          %result = arith.minnumf %in, %out : f16
+          %result = arith.maxnumf %in, %out : f16
           linalg.yield %result : f16
         }
       } {loop_type = #ktdf.loop_type<reduction_loop>}
