@@ -58,7 +58,7 @@
   kind = "SFU",
   ktdf_arch.features = {
     ktdf_arch.feature.compute,
-    ktdf_arch.feature.simd = { lanes = #ktdf_arch.map<f16 = 64> }
+    ktdf_arch.feature.simd = { lanes = #ktdf_arch.map<f16 = 64, f32 = 64> }
   }
 }
 
@@ -69,16 +69,18 @@
 
 #L1LU = {
   kind = "L1LU",
-  ktdf_arch.features = { 
+  ktdf_arch.features = {
     ktdf_arch.feature.load = {
+      word_size = #ktdf_arch.map<"L1" = 1>,
       access_granularity = #ktdf_arch.map<
         "L1" = [
-          {size_in_words = 64, align_in_words = 64}, 
-          {size_in_words = 2, align_in_words = 2}
+          {size_in_words = 64, align_in_words = 64},
+          {size_in_words = 8,  align_in_words = 8},
+          {size_in_words = 2,  align_in_words = 2}
         ]
       >
     },
-    ktdf_arch.feature.simd = { splat, zero_pad } 
+    ktdf_arch.feature.simd = { splat, zero_pad }
   }
 }
 #L1LU_CORE_FIFO = {
