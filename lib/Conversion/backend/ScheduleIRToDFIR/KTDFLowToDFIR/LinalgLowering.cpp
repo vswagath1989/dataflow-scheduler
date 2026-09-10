@@ -186,10 +186,10 @@ struct LowerLinalgGenericPattern
                     mlir::vectorchain::VectorChainBinaryOperator::min, compute);
               })
               .Case<mlir::arith::CmpFOp>([&](mlir::arith::CmpFOp op) {
-                return lowerCompareFOp(op, rewriter);
+                return lowerCompareFOp(op, rewriter, compute);
               })
               .Case<mlir::arith::SelectOp>([&](mlir::arith::SelectOp op) {
-                return lowerSelectOp(op, rewriter);
+                return lowerSelectOp(op, rewriter, compute);
               })
               .Case<mlir::arith::MaxNumFOp>([&](mlir::arith::MaxNumFOp op) {
                 mlir::Value lhs, rhs;
@@ -343,10 +343,10 @@ struct LowerLinalgGenericPattern
                     mlir::vectorchain::VectorChainBinaryOperator::min, compute);
               })
               .Case<mlir::arith::CmpFOp>([&](mlir::arith::CmpFOp op) {
-                return lowerCompareFOp(op, rewriter);
+                return lowerCompareFOp(op, rewriter, compute);
               })
               .Case<mlir::arith::SelectOp>([&](mlir::arith::SelectOp op) {
-                return lowerSelectOp(op, rewriter);
+                return lowerSelectOp(op, rewriter, compute);
               })
               .Case<mlir::memref::StoreOp>([&](mlir::memref::StoreOp op) {
                 return lowerMemRefStore(op, rewriter);
@@ -693,13 +693,15 @@ struct LowerLinalgGenericPattern
   /// The result carries the operands' type rather than a boolean: it is what a
   /// selection takes as its condition, and the unit keeps it in a lane of the
   /// same width. The i1 form of this op is the separate mask operand.
-  mlir::LogicalResult lowerCompareFOp(mlir::arith::CmpFOp op,
-                                      mlir::PatternRewriter& rewriter) const {
+  mlir::LogicalResult lowerCompareFOp(
+      mlir::arith::CmpFOp op, mlir::PatternRewriter& rewriter,
+      mlir::ktdf_arch::ExecutionUnitOp compute) const {
     const auto compare_kind = compareOperatorFor(op.getPredicate());
     if (!compare_kind) return mlir::failure();
 
-    auto operands =
-        getFlattenedVectorType(op.getLhs().getType(), resource_kinds_);
+    const auto lhs_ty = llvm::dyn_cast<mlir::ShapedType>(op.getLhs().getType());
+    if (!lhs_ty) return mlir::failure();
+    auto operands = getFlattenedVectorType(lhs_ty, compute);
     if (!operands) return mlir::failure();
 
     auto compare_op = mlir::vectorchain::ElementWiseCompareOp::create(
@@ -712,10 +714,13 @@ struct LowerLinalgGenericPattern
 
   /// Lowers \p op to an element-wise selection, taking a lane from one side or
   /// the other by the mask a compare left.
-  mlir::LogicalResult lowerSelectOp(mlir::arith::SelectOp op,
-                                    mlir::PatternRewriter& rewriter) const {
-    auto result =
-        getFlattenedVectorType(op.getTrueValue().getType(), resource_kinds_);
+  mlir::LogicalResult lowerSelectOp(
+      mlir::arith::SelectOp op, mlir::PatternRewriter& rewriter,
+      mlir::ktdf_arch::ExecutionUnitOp compute) const {
+    const auto picked =
+        llvm::dyn_cast<mlir::ShapedType>(op.getTrueValue().getType());
+    if (!picked) return mlir::failure();
+    auto result = getFlattenedVectorType(picked, compute);
     if (!result) return mlir::failure();
 
     auto selection_op = mlir::vectorchain::ElementWiseSelectionOp::create(
