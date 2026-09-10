@@ -118,6 +118,8 @@ void emitVectorStore(mlir::OpBuilder& builder, mlir::Location loc,
 /// Create a vectorchain.shuffle that broadcasts `src_vec`
 /// (vector<src_elements x T>) to vector<dst_elements x T> using indices
 /// [0..src_elements-1] with repetition = dst_elements / src_elements.
+/// `src_elements` must be positive and must divide `dst_elements` evenly;
+/// callers are expected to have validated (and diagnosed) that beforehand.
 mlir::Value insertSplatShuffle(mlir::OpBuilder& builder, mlir::Location loc,
                                mlir::Value src_vec, int64_t src_elements,
                                int64_t dst_elements);
@@ -141,7 +143,7 @@ llvm::FailureOr<scheduler::DataTransferType> getDataTransferType(
 /// fitting granularity exists.
 int64_t computeSplatGranularityElements(
     int64_t src_total_elements, mlir::Type elem_type, mlir::Attribute kind,
-    const arch_view::ResourceKinds& resource_kinds);
+    const mlir::ktdf_arch::ResourceKinds& resource_kinds);
 
 }  // namespace scheduler
 

@@ -320,6 +320,10 @@ mlir::Value scheduler::insertSplatShuffle(mlir::OpBuilder& builder,
                                           mlir::Value src_vec,
                                           int64_t src_elements,
                                           int64_t dst_elements) {
+  assert(src_elements > 0 && "splat source width must be positive");
+  assert(dst_elements % src_elements == 0 &&
+         "splat destination width must be a multiple of the source width");
+
   auto src_vec_type = mlir::cast<mlir::VectorType>(src_vec.getType());
   auto elem_type = src_vec_type.getElementType();
 
@@ -341,7 +345,7 @@ mlir::Value scheduler::insertSplatShuffle(mlir::OpBuilder& builder,
 
 int64_t scheduler::computeSplatGranularityElements(
     int64_t src_total_elements, mlir::Type elem_type, mlir::Attribute kind,
-    const arch_view::ResourceKinds& resource_kinds) {
+    const mlir::ktdf_arch::ResourceKinds& resource_kinds) {
   if (!kind) return src_total_elements;
 
   auto load_feature =
