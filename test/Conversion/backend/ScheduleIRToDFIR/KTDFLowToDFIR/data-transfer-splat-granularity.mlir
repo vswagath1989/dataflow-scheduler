@@ -1,0 +1,70 @@
+// RUN: dataflow-scheduler-opt -pass-pipeline="builtin.module(ktdflowering-to-dfir)" -allow-unregistered-dialect %s | FileCheck %s
+
+// Verify hardware-aware splat widening for f32 using the L1LU load feature.
+//
+// The sample_device L1LU has word_size=1 (byte) and access granularities
+// [64, 8, 2] words for "L1".  For f32 (4 bytes/elem):
+//   elem_words = 4 / 1 = 4
+//   min_words  = 1 src element * 4 = 4
+//   fitAccess(4) → size_in_words=8 (smallest entry >= 4)
+//   load_elements = 8 / 4 = 2   repetition = 64 / 2 = 32
+//
+// Send side: agen.vector_load produces vector<2xf32>
+//            vectorchain.shuffle indices=[0,1] rep=32 → vector<64xf32>
+//
+// Receive side: dataflow.receive produces vector<64xf32>
+//               vectorchain.shuffle indices=[0,0] rep=32 → vector<64xf32>
+
+// CHECK-LABEL: func.func @splat_granularity_f32
+// --- load-unit program_unit (L1LU) ---
+// CHECK:       dataflow.program_unit
+// CHECK:         %[[LOAD:.+]] = agen.vector_load
+// CHECK-SAME:      vector<2xf32>
+// CHECK-NEXT:    %[[SEND_SHUF:.+]] = vectorchain.shuffle input(%[[LOAD]]) {indices = [0 : i32, 1 : i32], repetition = 32 : i32} : vector<2xf32>, vector<64xf32>
+// CHECK:         dataflow.send %{{.*}}, %[[SEND_SHUF]] : vector<64xf32>
+// --- compute-unit program_unit (SFU) ---
+// CHECK:       dataflow.program_unit
+// CHECK:         %[[RECV:.+]] = dataflow.receive
+// CHECK-SAME:      vector<64xf32>
+// CHECK-NEXT:    %[[RECV_SHUF:.+]] = vectorchain.shuffle input(%[[RECV]]) {indices = [0 : i32, 0 : i32], repetition = 32 : i32} : vector<64xf32>, vector<64xf32>
+// CHECK:         "test.use"(%[[RECV_SHUF]])
+
+module {
+  ktdf_arch.device @sample_device attributes {} import("../../../../Dialect/KTDFArch/sample_device.mlir")
+  func.func @splat_granularity_f32() attributes {grid = [2]} {
+    %0 = dataflow.get_unit {core = 0 : i32, name = "C0-L1LU", type = "L1LU"} : index
+    %1 = dataflow.get_unit {core = 1 : i32, name = "C1-L1LU", type = "L1LU"} : index
+    %2 = dataflow.get_unit {core = 0 : i32, name = "C0-SFU", type = "SFU"} : index
+    %3 = dataflow.get_unit {core = 1 : i32, name = "C1-SFU", type = "SFU"} : index
+    %tile_id = ktdp.get_compute_tile_id : index
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c12 = arith.constant 12 : index
+    %map_l1lu = uniform.def_immutable_mapping([%c0 -> %0], [%c1 -> %1]):index
+    %u_l1lu = uniform.query_map(map:%map_l1lu, key:%tile_id) : index
+    %map_sfu  = uniform.def_immutable_mapping([%c0 -> %2], [%c1 -> %3]):index
+    %u_sfu  = uniform.query_map(map:%map_sfu,  key:%tile_id) : index
+    ktdf_lowering.execute_on %u_l1lu, %u_sfu {
+      %alloc = memref.alloc() : memref<256xf32, "L1">
+      %fifo:1 = ktdf.fifo.allocate() -> !ktdf.fifo.slot<"L1LU" -> "SFU", 64xf32>
+      ktdf_lowering.execute_on %u_l1lu {
+        scf.for %i = %c0 to %c12 step %c1 {
+          // Source size [1], dest size [64]: splat 1 f32 element to 64.
+          // With word_size=1 and fitAccess(4)=8 words → loads 2 elements,
+          // shuffle rep=32 instead of loading 1 element and rep=64.
+          ktdf.data_transfer from %alloc[%c0] size [1]
+                             to %fifo#0 size [64]
+                             {transfer_mode = "splat"}
+              : memref<256xf32, "L1">, !ktdf.fifo.slot<"L1LU" -> "SFU", 64xf32>
+        } {loop_type = #ktdf.loop_type<parallel_loop>}
+      }
+      ktdf_lowering.execute_on %u_sfu {
+        scf.for %i = %c0 to %c12 step %c1 {
+          %result = ktdf.read_from_fifo %fifo#0 : <"L1LU" -> "SFU", 64xf32> -> tensor<1x64xf32>
+          "test.use"(%result) : (tensor<1x64xf32>) -> ()
+        } {loop_type = #ktdf.loop_type<parallel_loop>}
+      }
+    }
+    return
+  }
+}

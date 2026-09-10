@@ -54,6 +54,7 @@
 #include "dataflow-scheduler/Dialect/KTDFArch/KTDFArchAttributes.h"
 #include "dataflow-scheduler/Dialect/KTDFLowering/KTDFLowering.h"
 #include "dataflow-scheduler/Dialect/Uniform/Uniform.h"
+#include "dataflow-scheduler/Dialect/VectorChain/VectorChain.h"
 #include "dataflow-scheduler/Utils/SchedulerExtContext.h"
 
 #define DEBUG_TYPE "ktdflowering-to-dfir"
@@ -113,8 +114,75 @@ struct LowerReadFromFifoPattern
         rewriter, read_op.getLoc(), vector_type, queried_unit,
         /*dbgName=*/nullptr);
 
-    // Replace the read_from_fifo with the receive operation
-    rewriter.replaceOp(read_op, receive_op.getData());
+    // If the FIFO was filled by a splat data_transfer, the send side widened
+    // its load to the arch's minimum access granularity and shuffled to the
+    // full vector width.  The receive side mirrors that with a matching
+    // shuffle.
+    //
+    // read_with_splat = true is set by a pre-pass walk that runs before
+    // buildProgramUnits in KTDFLowToDFIRPass::runOnOperation (see
+    // KTDFLowToDFIR.cpp), so we read it directly here.
+    mlir::Value result = receive_op.getData();
+    auto splat_attr = read_op->getDiscardableAttr("read_with_splat");
+    bool is_splat =
+        splat_attr && mlir::cast<mlir::BoolAttr>(splat_attr).getValue();
+
+    if (is_splat) {
+      // The FIFO src endpoint names the load unit. Use that
+      // directly for the granularity query — the enclosing program_unit is the
+      // compute unit which has no Load feature.
+      auto src_attr =
+          mlir::dyn_cast_or_null<mlir::StringAttr>(fifo_slot_type.getSrc());
+      mlir::Attribute kind =
+          src_attr ? mlir::StringAttr::get(src_attr.getContext(),
+                                           src_attr.getValue().upper())
+                   : mlir::Attribute{};
+
+      // The granularity query iterates all memory spaces declared in the Load
+      // feature (memory space is stripped by buildLogicalMemoryViews before
+      // lowering patterns run).
+      int64_t fifo_elements = vector_type.getNumElements();
+      // On the receive side we only need to know the granularity-aligned load
+      // width, not reproduce the exact source shape.  Query with 1 element so
+      // fitAccess returns the smallest declared granularity (in elements).
+      constexpr int64_t kSplatSrcElements = 1;
+      int64_t granularity_elements = computeSplatGranularityElements(
+          kSplatSrcElements, vector_type.getElementType(), kind,
+          resource_kinds_);
+
+      // Re-express the splat on the received vector.  The receive already
+      // holds a full fifo_elements-wide value.  The send side loaded
+      // granularity_elements values and broadcast them; the receive mirrors
+      // that by emitting a shuffle with granularity_elements all-zero indices
+      // (each pointing at element 0 of the received vector) repeated until
+      // the full width is covered:
+      //
+      //   indices    = [0, 0, ..., 0]  (length = granularity_elements)
+      //   repetition = fifo_elements / granularity_elements
+      //
+      // Example: fifo_elements=32, granularity_elements=2 →
+      //   indices = [0, 0], repetition = 16
+      if (granularity_elements > kSplatSrcElements &&
+          granularity_elements <= fifo_elements &&
+          fifo_elements % granularity_elements == 0) {
+        llvm::SmallVector<mlir::Attribute> index_attrs(
+            granularity_elements,
+            rewriter.getIntegerAttr(rewriter.getI32Type(), 0));
+        int32_t repetition =
+            static_cast<int32_t>(fifo_elements / granularity_elements);
+        result = mlir::vectorchain::ShuffleOp::create(
+                     rewriter, read_op.getLoc(), vector_type, result,
+                     /*variable=*/mlir::ValueRange{},
+                     /*pad=*/mlir::ValueRange{},
+                     /*mask=*/nullptr, /*dbgName=*/nullptr,
+                     rewriter.getArrayAttr(index_attrs),
+                     rewriter.getI32IntegerAttr(repetition))
+                     .getOutput();
+      }
+    }
+
+    // Replace the read_from_fifo with the (possibly shuffled) result
+    rewriter.replaceOp(read_op, result);
 
     return mlir::success();
   }

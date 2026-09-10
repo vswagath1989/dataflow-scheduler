@@ -28,6 +28,7 @@
 #include "dataflow-scheduler/Dialect/KTDFArch/KTDFArch.h"
 #include "dataflow-scheduler/Dialect/KTDFArch/KTDFArchIntrinsics.h"
 #include "dataflow-scheduler/Dialect/Uniform/Uniform.h"
+#include "dataflow-scheduler/Dialect/VectorChain/VectorChain.h"
 #include "dataflow-scheduler/Utils/SchedulerExtContext.h"
 #include "ktir/Dialect/KTDP/KTDP.h"
 #include "llvm/ADT/SmallVector.h"
@@ -312,4 +313,81 @@ llvm::FailureOr<scheduler::DataTransferType> scheduler::getDataTransferType(
 
   // Both source and destination are FIFO slots - unsupported
   return llvm::failure();
+}
+
+mlir::Value scheduler::insertSplatShuffle(mlir::OpBuilder& builder,
+                                          mlir::Location loc,
+                                          mlir::Value src_vec,
+                                          int64_t src_elements,
+                                          int64_t dst_elements) {
+  auto src_vec_type = mlir::cast<mlir::VectorType>(src_vec.getType());
+  auto elem_type = src_vec_type.getElementType();
+
+  llvm::SmallVector<mlir::Attribute> index_attrs;
+  for (int64_t i = 0; i < src_elements; ++i) {
+    index_attrs.push_back(builder.getIntegerAttr(builder.getI32Type(), i));
+  }
+  auto indices_attr = builder.getArrayAttr(index_attrs);
+  int32_t repetition = static_cast<int32_t>(dst_elements / src_elements);
+  auto result_type = mlir::VectorType::get({dst_elements}, elem_type);
+
+  return mlir::vectorchain::ShuffleOp::create(
+             builder, loc, result_type, src_vec,
+             /*variable=*/mlir::ValueRange{}, /*pad=*/mlir::ValueRange{},
+             /*mask=*/nullptr, /*dbgName=*/nullptr, indices_attr,
+             builder.getI32IntegerAttr(repetition))
+      .getOutput();
+}
+
+int64_t scheduler::computeSplatGranularityElements(
+    int64_t src_total_elements, mlir::Type elem_type, mlir::Attribute kind,
+    const arch_view::ResourceKinds& resource_kinds) {
+  if (!kind) return src_total_elements;
+
+  auto load_feature =
+      resource_kinds.getFeature<mlir::ktdf_arch::feature::Load>(kind);
+  if (!load_feature) return src_total_elements;
+
+  // The memory space is not available at lowering time (stripped by
+  // buildLogicalMemoryViews).  Iterate all memory spaces declared in the Load
+  // feature and return the smallest fitting granularity across all of them.
+  auto tryWithSpace = [&](mlir::Attribute space) -> int64_t {
+    auto granularity_list = load_feature.getAccessGranularity(space);
+    if (!granularity_list) return src_total_elements;
+
+    size_t elem_bytes =
+        (static_cast<size_t>(elem_type.getIntOrFloatBitWidth()) + 7) / 8;
+    size_t word_size = load_feature.getWordSize(space);
+    if (word_size == 0) return src_total_elements;
+
+    // elem_words: number of words one element occupies (always >= 1).
+    size_t elem_words = (elem_bytes + word_size - 1) / word_size;
+
+    // Minimum load size in words to cover all src elements.
+    size_t min_words = static_cast<size_t>(src_total_elements) * elem_words;
+
+    auto best = granularity_list.fitAccess(min_words);
+    if (!best) return src_total_elements;
+
+    int64_t load_elements =
+        static_cast<int64_t>(best.getSizeInWords() / elem_words);
+    return std::max(load_elements, src_total_elements);
+  };
+
+  auto gran_map = load_feature.getAccessGranularity();
+  if (!gran_map) return src_total_elements;
+
+  // Walk every declared memory space and keep the smallest fitting granularity
+  // found across all of them.  The first result wins as the initial best;
+  // subsequent results only replace it when they are strictly smaller.
+  int64_t best_result = src_total_elements;
+  bool found_any = false;
+  for (auto [space_attr, _] : gran_map) {
+    int64_t result = tryWithSpace(space_attr);
+    if (!found_any || result < best_result) {
+      best_result = result;
+      found_any = true;
+    }
+  }
+  return best_result;
 }

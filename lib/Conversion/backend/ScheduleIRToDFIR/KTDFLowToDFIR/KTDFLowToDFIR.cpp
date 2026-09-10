@@ -126,6 +126,28 @@ struct KTDFLowToDFIRPass
       if (components.empty()) {
         LDBG(1) << "  no ktdf_lowering.execute_on ops; skipping function";
       } else {
+        // Pre-pass: annotate each read_from_fifo that consumes a FIFO filled
+        // by a splat data_transfer with read_with_splat = true.  This must run
+        // before buildProgramUnits, which clones the work ops into separate
+        // program_unit bodies — after cloning the two ops no longer share the
+        // same SSA FIFO-slot value.
+        func.walk([](mlir::ktdf::DataTransferOp data_transfer) {
+          if (!data_transfer.isDestFifo()) return;
+          auto mode_attr = data_transfer->getDiscardableAttr("transfer_mode");
+          if (!mode_attr) return;
+          auto mode_str = llvm::cast<mlir::StringAttr>(mode_attr).getValue();
+          if (mode_str != "splat") return;
+          mlir::Value fifo_slot = data_transfer.getDestination();
+          for (mlir::Operation* user : fifo_slot.getUsers()) {
+            auto read_op = mlir::dyn_cast<mlir::ktdf::ReadFromFifoOp>(user);
+            if (read_op && read_op.getFifoSlot() == fifo_slot) {
+              read_op->setDiscardableAttr(
+                  "read_with_splat",
+                  mlir::BoolAttr::get(read_op->getContext(), true));
+            }
+          }
+        });
+
         if (mlir::failed(buildProgramUnits(func, split.work_ops, components))) {
           return signalPassFailure();
         }
