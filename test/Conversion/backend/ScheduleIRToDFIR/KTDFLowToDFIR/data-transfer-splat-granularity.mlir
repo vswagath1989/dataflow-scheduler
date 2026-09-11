@@ -9,24 +9,40 @@
 //   agen.vector_load vector<2xf32>
 //   vectorchain.shuffle indices=[0,1] rep=32 → vector<64xf32>
 //
+//   When the source memref is multi-dimensional (e.g. memref<?x1x1x32xf32>
+//   with src_static_sizes=[1,1,1,1]), widening replaces only the innermost
+//   dimension: effective_sizes=[1,1,1,4], producing a 4D load_set that keeps
+//   all outer dims equality-constrained (d0==0, d1==0, d2==0) and gives the
+//   inner dim a range (d3>=0, -d3+3>=0).  The 1D source in this test
+//   (src_static_sizes=[1]) yields effective_sizes=[2] with the same logic.
+//
 // Receive side — SFU sub_simd_lanes (arch-declared shuffle granularity):
 //   SFU sub_simd_lanes for f32 = 8  →  repetition = 64 / 8 = 8
 //   dataflow.receive vector<64xf32>
 //   vectorchain.shuffle indices=[0,0,0,0,0,0,0,0] rep=8 → vector<64xf32>
 
+// CHECK-DAG: #[[MAP:.+]] = affine_map<(d0) -> (d0)>
+// CHECK-DAG: #[[SET:.+]] = affine_set<(d0) : (d0 >= 0, -d0 + 1 >= 0)>
+
 // CHECK-LABEL: func.func @splat_granularity_f32
 // --- load-unit program_unit (L1LU) ---
-// CHECK:       dataflow.program_unit
-// CHECK:         %[[LOAD:.+]] = agen.vector_load
-// CHECK-SAME:      vector<2xf32>
-// CHECK-NEXT:    %[[SEND_SHUF:.+]] = vectorchain.shuffle input(%[[LOAD]]) {indices = [0 : i32, 1 : i32], repetition = 32 : i32} : vector<2xf32>, vector<64xf32>
-// CHECK:         dataflow.send %{{.*}}, %[[SEND_SHUF]] : vector<64xf32>
+// CHECK:       dataflow.program_unit iter_arg : %[[ITER_L:.+]] -> (%[[U0:.+]], %[[U1:.+]]) :
+// CHECK:         %[[ALLOC:.+]] = memref.alloc() : memref<256xf32, "L1">
+// CHECK:         scf.for
+// CHECK:           %[[LOAD:.+]] = agen.vector_load %[[ALLOC]][%{{.*}}]
+// CHECK-SAME:        {load_order = #[[MAP]], load_set = #[[SET]]} : memref<256xf32, "L1">, vector<2xf32>
+// CHECK-NEXT:      %[[SEND_SHUF:.+]] = vectorchain.shuffle input(%[[LOAD]]) {indices = [0 : i32, 1 : i32], repetition = 32 : i32} : vector<2xf32>, vector<64xf32>
+// CHECK-NEXT:      %[[DST_MAP:.+]] = uniform.def_immutable_mapping([%[[U0]] -> %{{.*}}], [%[[U1]] -> %{{.*}}]):index
+// CHECK-NEXT:      %[[DST:.+]] = uniform.query_map(map:%[[DST_MAP]], key:%[[ITER_L]]) : index
+// CHECK-NEXT:      dataflow.send %[[DST]], %[[SEND_SHUF]] : vector<64xf32>
 // --- compute-unit program_unit (SFU) ---
-// CHECK:       dataflow.program_unit
-// CHECK:         %[[RECV:.+]] = dataflow.receive
-// CHECK-SAME:      vector<64xf32>
-// CHECK-NEXT:    %[[RECV_SHUF:.+]] = vectorchain.shuffle input(%[[RECV]]) {indices = [0 : i32, 0 : i32, 0 : i32, 0 : i32, 0 : i32, 0 : i32, 0 : i32, 0 : i32], repetition = 8 : i32} : vector<64xf32>, vector<64xf32>
-// CHECK:         "test.use"(%[[RECV_SHUF]])
+// CHECK:       dataflow.program_unit iter_arg : %[[ITER_C:.+]] -> (%[[V0:.+]], %[[V1:.+]]) :
+// CHECK:         scf.for
+// CHECK:           %[[SRC_MAP:.+]] = uniform.def_immutable_mapping([%[[V0]] -> %{{.*}}], [%[[V1]] -> %{{.*}}]):index
+// CHECK-NEXT:      %[[SRC:.+]] = uniform.query_map(map:%[[SRC_MAP]], key:%[[ITER_C]]) : index
+// CHECK-NEXT:      %[[RECV:.+]] = dataflow.receive %[[SRC]] : vector<64xf32>
+// CHECK-NEXT:      %[[RECV_SHUF:.+]] = vectorchain.shuffle input(%[[RECV]]) {indices = [0 : i32, 0 : i32, 0 : i32, 0 : i32, 0 : i32, 0 : i32, 0 : i32, 0 : i32], repetition = 8 : i32} : vector<64xf32>, vector<64xf32>
+// CHECK-NEXT:      "test.use"(%[[RECV_SHUF]])
 
 module {
   ktdf_arch.device @sample_device attributes {} import("../../../../Dialect/KTDFArch/sample_device.mlir")
