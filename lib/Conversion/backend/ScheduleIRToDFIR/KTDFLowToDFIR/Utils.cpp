@@ -343,6 +343,40 @@ mlir::Value scheduler::insertSplatShuffle(mlir::OpBuilder& builder,
       .getOutput();
 }
 
+llvm::FailureOr<int64_t> scheduler::computeSplatSubSimdElements(
+    int64_t dst_total_elements, mlir::Type elem_type, mlir::Attribute kind,
+    const mlir::ktdf_arch::ResourceKinds& resource_kinds,
+    mlir::Operation* op_for_errors) {
+  if (!kind) return dst_total_elements;
+
+  auto simd_feature =
+      resource_kinds.getFeature<mlir::ktdf_arch::feature::SIMD>(kind);
+  if (!simd_feature) return dst_total_elements;
+
+  // Verify the compute unit declares FirstSubSimdLaneToEachSubSimd.
+  auto shuffle_modes =
+      simd_feature.getAttr<mlir::DictionaryAttr>("shuffle_modes");
+  if (!shuffle_modes || !shuffle_modes.get("FirstSubSimdLaneToEachSubSimd")) {
+    op_for_errors->emitError(
+        "splat receive requires the compute unit to declare "
+        "shuffle_modes = { FirstSubSimdLaneToEachSubSimd } in "
+        "ktdf_arch.feature.simd");
+    return mlir::failure();
+  }
+
+  // Read sub_simd_lanes for elem_type.
+  auto sub_simd_lanes =
+      simd_feature.getAttr<mlir::ktdf_arch::feature::SIMD::LanesAttr>(
+          "sub_simd_lanes");
+  if (!sub_simd_lanes) return dst_total_elements;
+
+  int64_t lane_count =
+      sub_simd_lanes.getValue(mlir::TypeAttr::get(elem_type)).value_or(0);
+  if (lane_count <= 0) return dst_total_elements;
+
+  return lane_count;
+}
+
 int64_t scheduler::computeSplatGranularityElements(
     int64_t src_total_elements, mlir::Type elem_type, mlir::Attribute kind,
     const mlir::ktdf_arch::ResourceKinds& resource_kinds) {

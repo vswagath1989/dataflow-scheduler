@@ -145,6 +145,21 @@ int64_t computeSplatGranularityElements(
     int64_t src_total_elements, mlir::Type elem_type, mlir::Attribute kind,
     const mlir::ktdf_arch::ResourceKinds& resource_kinds);
 
+/// Compute the sub-SIMD lane count for a splat shuffle on a compute unit.
+///
+/// Reads `sub_simd_lanes` from the SIMD feature of `kind`, looks up
+/// `elem_type`, and returns that count as the shuffle granularity.
+/// Also verifies that the SIMD feature declares
+/// `shuffle_modes = { FirstSubSimdLaneToEachSubSimd }`: if not, emits an
+/// error on `op_for_errors` and returns failure.
+///
+/// Falls back to `dst_total_elements` (no shuffle) when the SIMD feature or
+/// `sub_simd_lanes` is absent.
+llvm::FailureOr<int64_t> computeSplatSubSimdElements(
+    int64_t dst_total_elements, mlir::Type elem_type, mlir::Attribute kind,
+    const mlir::ktdf_arch::ResourceKinds& resource_kinds,
+    mlir::Operation* op_for_errors);
+
 }  // namespace scheduler
 
 #endif  // DATAFLOW_SCHEDULER_CONVERSION_KTDFLOWTODFIR_UTILS_H_

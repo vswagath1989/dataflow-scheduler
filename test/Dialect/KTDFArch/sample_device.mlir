@@ -58,7 +58,11 @@
   kind = "SFU",
   ktdf_arch.features = {
     ktdf_arch.feature.compute,
-    ktdf_arch.feature.simd = { lanes = #ktdf_arch.map<f16 = 64, f32 = 64> }
+    ktdf_arch.feature.simd = {
+      lanes = #ktdf_arch.map<f16 = 64, f32 = 64, i32 = 64>,
+      sub_simd_lanes = #ktdf_arch.map<f16 = 8, f32 = 8, i32 = 8>,
+      shuffle_modes = { FirstSubSimdLaneToEachSubSimd }
+    }
   }
 }
 
