@@ -178,13 +178,19 @@ struct LowerReadFromFifoPattern
         // bare memref.alloc.
         //
         // Step 1: find or create a dataflow.get_unit for the register file at
-        // function scope.  The type tag is the lowercased register space name,
-        // e.g. "SFU" → "sfu_reg".
-        auto compute_kind_str =
-            mlir::cast<mlir::StringAttr>(compute_kind).getValue();
+        // function scope.  The register file kind is looked up from the arch
+        // as the MemoryOp co-located with the compute unit in the same group.
+        // The type tag used in dataflow.get_unit is its lowercased kind string.
+        mlir::Attribute reg_kind =
+            getComputeRegisterKind(compute_kind, resource_kinds_);
+        if (!reg_kind) {
+          read_op.emitError(
+              "splat receive: no register-file memory found in the same "
+              "arch group as the compute unit");
+          return mlir::failure();
+        }
         std::string reg_type_tag =
-            llvm::StringRef((llvm::Twine(compute_kind_str) + "_REG").str())
-                .lower();
+            mlir::cast<mlir::StringAttr>(reg_kind).getValue().lower();
 
         auto func_op = read_op->getParentOfType<mlir::func::FuncOp>();
         assert(func_op && "read_from_fifo must be inside a func.func");
