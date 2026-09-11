@@ -571,14 +571,6 @@ struct LowerDataTransferPattern
       unsigned num_dims, mlir::VectorType vector_type, mlir::AffineMap src_map,
       mlir::ktdf::FifoSlotType dst_fifo_slot_type, bool is_splat,
       int64_t src_total_elements) const {
-    // Build load_set from source sizes
-    auto load_set =
-        buildIntegerSetFromSizes(rewriter.getContext(), src_static_sizes);
-
-    // Build load_order
-    auto load_order = mlir::AffineMap::getMultiDimIdentityMap(
-        num_dims, rewriter.getContext());
-
     // Find the enclosing program_unit (needed both for the splat granularity
     // query and for the send destination resolution below).
     auto program_unit =
@@ -617,6 +609,29 @@ struct LowerDataTransferPattern
                          ? mlir::VectorType::get({load_elements},
                                                  vector_type.getElementType())
                          : vector_type;
+
+    // Build load_set and load_order from the actual number of elements being
+    // loaded.  The source memref always has `num_dims` dimensions, so
+    // load_set/load_order must always be num_dims-dimensional.
+    //
+    // For a non-splat transfer the sizes match src_static_sizes exactly.
+    // For a splat transfer where load_elements > src_total_elements, the
+    // hardware widens the load in the innermost dimension to satisfy the
+    // minimum access granularity.  All outer dimensions remain as-is; only
+    // the innermost dimension size is replaced with load_elements.
+    //
+    // Example: src_static_sizes = [1,1,1,1], load_elements = 4
+    //   → effective_sizes = [1,1,1,4]
+    //   → load_set = affine_set<(d0,d1,d2,d3): d0==0, d1==0, d2==0, d3>=0,
+    //   3-d3>=0>
+    llvm::SmallVector<int64_t> effective_sizes(src_static_sizes);
+    if (is_splat && load_elements != src_total_elements) {
+      effective_sizes.back() = load_elements;
+    }
+    mlir::IntegerSet load_set =
+        buildIntegerSetFromSizes(rewriter.getContext(), effective_sizes);
+    mlir::AffineMap load_order = mlir::AffineMap::getMultiDimIdentityMap(
+        num_dims, rewriter.getContext());
 
     // Create vector_load operation
     auto vector_load_op = mlir::agen::VectorLoadOp::create(
