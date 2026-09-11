@@ -27,9 +27,12 @@
 
 namespace scheduler {
 
-/// Extract the resource type from a unit SSA value (result of
-/// uniform.query_map). The resource is the unit's type name as a StringAttr
-/// (e.g. "SFU").
+/// Extract the resource type from a unit SSA value.  Accepts either:
+///   - a direct `dataflow.get_unit` result, or
+///   - a `uniform.query_map` result (follows query_map →
+///     def_immutable_mapping → get_unit).
+/// Returns the unit's type name as an upper-cased StringAttr (e.g. "SFU"),
+/// or nullopt if the chain cannot be resolved.
 auto getUnitResourceType(mlir::Value unit_value)
     -> std::optional<scheduler::ResourceType>;
 

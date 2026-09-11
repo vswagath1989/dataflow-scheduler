@@ -20,6 +20,7 @@
 
 #include <mlir/IR/BuiltinTypeInterfaces.h>
 
+#include "dataflow-scheduler/Conversion/Utils/Utils.h"
 #include "dataflow-scheduler/Dialect/Agen/Agen.h"
 #include "dataflow-scheduler/Dialect/Dataflow/Dataflow.h"
 #include "dataflow-scheduler/Dialect/Dataflow/Utils.h"
@@ -46,19 +47,7 @@ std::optional<scheduler::ResourceType>
 scheduler::getEnclosingProgramUnitResourceType(mlir::Operation* op) {
   auto pu = op->getParentOfType<mlir::dataflow::ProgramUnitOp>();
   if (!pu || pu.getUnits().empty()) return std::nullopt;
-
-  mlir::Value first_unit = pu.getUnits().front();
-
-  // Direct dataflow.get_unit operand (already-lowered program_unit).
-  if (auto get_unit = mlir::dyn_cast_or_null<mlir::dataflow::GetUnitOp>(
-          first_unit.getDefiningOp())) {
-    auto type_attr = get_unit->getAttrOfType<mlir::StringAttr>("type");
-    if (type_attr)
-      return mlir::StringAttr::get(op->getContext(),
-                                   type_attr.getValue().upper());
-  }
-
-  return std::nullopt;
+  return scheduler::getUnitResourceType(pu.getUnits().front());
 }
 
 int64_t scheduler::getVectorLanes(mlir::Type elem_type,

@@ -25,26 +25,25 @@ namespace scheduler {
 
 auto getUnitResourceType(mlir::Value unit_value)
     -> std::optional<scheduler::ResourceType> {
-  auto query_op = unit_value.getDefiningOp<mlir::uniform::QueryMapOp>();
-  if (!query_op) {
-    return std::nullopt;
+  // Direct dataflow.get_unit result.
+  if (auto get_unit = unit_value.getDefiningOp<mlir::dataflow::GetUnitOp>()) {
+    return mlir::StringAttr::get(unit_value.getContext(),
+                                 get_unit.getType().upper());
   }
+
+  // uniform.query_map → uniform.def_immutable_mapping → dataflow.get_unit.
+  auto query_op = unit_value.getDefiningOp<mlir::uniform::QueryMapOp>();
+  if (!query_op) return std::nullopt;
 
   auto def_mapping_op =
       query_op.getMap().getDefiningOp<mlir::uniform::DefImmutableMappingOp>();
-  if (!def_mapping_op) {
-    return std::nullopt;
-  }
+  if (!def_mapping_op) return std::nullopt;
 
   auto values = def_mapping_op.getValues();
-  if (values.empty()) {
-    return std::nullopt;
-  }
+  if (values.empty()) return std::nullopt;
 
   auto get_unit_op = values.front().getDefiningOp<mlir::dataflow::GetUnitOp>();
-  if (!get_unit_op) {
-    return std::nullopt;
-  }
+  if (!get_unit_op) return std::nullopt;
 
   return mlir::StringAttr::get(unit_value.getContext(),
                                get_unit_op.getType().upper());

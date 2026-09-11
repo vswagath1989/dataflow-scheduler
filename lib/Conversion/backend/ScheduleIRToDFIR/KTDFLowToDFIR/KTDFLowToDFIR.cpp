@@ -25,12 +25,14 @@
 #include <mlir/Transforms/RegionUtils.h>
 
 #include "dataflow-scheduler/Analysis/ArchViews/MemoryTree.h"
+#include "dataflow-scheduler/Conversion/Utils/Utils.h"
 #include "dataflow-scheduler/Conversion/backend/ScheduleIRToDFIR/KTDFLowToDFIR/LogicalMemoryViewBuilder.h"
 #include "dataflow-scheduler/Conversion/backend/ScheduleIRToDFIR/KTDFLowToDFIR/OperationLowerings.h"
 #include "dataflow-scheduler/Conversion/backend/ScheduleIRToDFIR/KTDFLowToDFIR/PreludeWorkPartition.h"
 #include "dataflow-scheduler/Conversion/backend/ScheduleIRToDFIR/KTDFLowToDFIR/ProgramUnitBuilder.h"
 #include "dataflow-scheduler/Conversion/backend/ScheduleIRToDFIR/KTDFLowToDFIR/QueryMapArithCollapse.h"
 #include "dataflow-scheduler/Conversion/backend/ScheduleIRToDFIR/KTDFLowToDFIR/UnitTypeDiscovery.h"
+#include "dataflow-scheduler/Conversion/backend/ScheduleIRToDFIR/KTDFLowToDFIR/Utils.h"
 #include "dataflow-scheduler/Conversion/backend/ScheduleIRToDFIR/Passes.h"
 #include "dataflow-scheduler/Dialect/Agen/Agen.h"
 #include "dataflow-scheduler/Dialect/Dataflow/Dataflow.h"
@@ -127,16 +129,43 @@ struct KTDFLowToDFIRPass
         LDBG(1) << "  no ktdf_lowering.execute_on ops; skipping function";
       } else {
         // Pre-pass: annotate each read_from_fifo that consumes a FIFO filled
-        // by a splat data_transfer with read_with_splat = true.  This must run
-        // before buildProgramUnits, which clones the work ops into separate
-        // program_unit bodies — after cloning the two ops no longer share the
-        // same SSA FIFO-slot value.
-        func.walk([](mlir::ktdf::DataTransferOp data_transfer) {
+        // by a splat data_transfer with read_with_splat = true — but only when
+        // the send side actually widened the load beyond 1 element
+        // (load_elements > 1).  When load_elements == 1 the FIFO already
+        // carries a pure scalar broadcast and the receive side needs no
+        // shuffle.
+        //
+        // This must run before buildProgramUnits, which clones the work ops
+        // into separate program_unit bodies — after cloning the two ops no
+        // longer share the same SSA FIFO-slot value.
+        func.walk([&resource_kinds](mlir::ktdf::DataTransferOp data_transfer) {
           if (!data_transfer.isDestFifo()) return;
           auto mode_attr = data_transfer->getDiscardableAttr("transfer_mode");
           if (!mode_attr) return;
           auto mode_str = llvm::cast<mlir::StringAttr>(mode_attr).getValue();
           if (mode_str != "splat") return;
+
+          // Resolve the load unit kind from the enclosing execute_on.
+          mlir::Attribute load_unit_kind;
+          auto exec = data_transfer
+                          ->getParentOfType<mlir::ktdf_lowering::ExecuteOnOp>();
+          if (exec && !exec.getUnits().empty())
+            load_unit_kind =
+                scheduler::getUnitResourceType(exec.getUnits().front())
+                    .value_or(mlir::Attribute{});
+
+          // Compute the send-side load_elements. Only annotate when widening
+          // actually occurred (load_elements > src_elements), which is the
+          // case where the receive side needs to re-broadcast within each
+          // sub-SIMD group.
+          auto fifo_slot_type = mlir::cast<mlir::ktdf::FifoSlotType>(
+              data_transfer.getDestination().getType());
+          mlir::Type elem_type = fifo_slot_type.getElementType();
+          int64_t src_elements = (*data_transfer.getStaticSourceSizes())[0];
+          int64_t load_elements = computeSplatGranularityElements(
+              src_elements, elem_type, load_unit_kind, resource_kinds);
+          if (load_elements <= src_elements) return;
+
           mlir::Value fifo_slot = data_transfer.getDestination();
           for (mlir::Operation* user : fifo_slot.getUsers()) {
             auto read_op = mlir::dyn_cast<mlir::ktdf::ReadFromFifoOp>(user);
