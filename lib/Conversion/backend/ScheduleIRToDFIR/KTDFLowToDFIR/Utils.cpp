@@ -418,3 +418,25 @@ int64_t scheduler::computeSplatGranularityElements(
   }
   return best_result;
 }
+
+mlir::Attribute scheduler::getComputeRegisterKind(
+    mlir::Attribute compute_kind,
+    const mlir::ktdf_arch::ResourceKinds& resource_kinds) {
+  if (!compute_kind) return nullptr;
+
+  // The register file is the MemoryOp whose exemplar shares the same parent
+  // GroupOp as the compute unit's exemplar.
+  const auto& compute_entry = resource_kinds[compute_kind];
+  if (!compute_entry) return nullptr;
+
+  mlir::Operation* compute_parent = compute_entry.getExemplar()->getParentOp();
+  if (!compute_parent) return nullptr;
+
+  for (const auto& kind : resource_kinds) {
+    auto mem_op = mlir::dyn_cast<mlir::ktdf_arch::MemoryOp>(kind.getExemplar());
+    if (!mem_op) continue;
+    if (mem_op->getParentOp() != compute_parent) continue;
+    return kind.getKind();
+  }
+  return nullptr;
+}

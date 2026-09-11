@@ -160,6 +160,16 @@ llvm::FailureOr<int64_t> computeSplatSubSimdElements(
     const mlir::ktdf_arch::ResourceKinds& resource_kinds,
     mlir::Operation* op_for_errors);
 
+/// Return the kind attribute of the register-file memory that is co-located
+/// with the compute unit of kind `compute_kind` in the arch graph.
+///
+/// "Co-located" means the register-file memory's exemplar lives in the same
+/// parent GroupOp as the compute unit's exemplar (e.g. SFP_LRFREG shares the
+/// SFP_Block group with SFP).  Returns nullptr when no such memory is found.
+mlir::Attribute getComputeRegisterKind(
+    mlir::Attribute compute_kind,
+    const mlir::ktdf_arch::ResourceKinds& resource_kinds);
+
 }  // namespace scheduler
 
 #endif  // DATAFLOW_SCHEDULER_CONVERSION_KTDFLOWTODFIR_UTILS_H_
