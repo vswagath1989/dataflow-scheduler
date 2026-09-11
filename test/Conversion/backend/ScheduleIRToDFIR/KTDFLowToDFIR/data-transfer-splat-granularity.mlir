@@ -1,19 +1,18 @@
 // RUN: dataflow-scheduler-opt -pass-pipeline="builtin.module(ktdflowering-to-dfir)" -allow-unregistered-dialect %s | FileCheck %s
 
-// Verify hardware-aware splat widening for f32 using the L1LU load feature.
+// Verify hardware-aware splat widening for f32.
 //
-// The sample_device L1LU has word_size=1 (byte) and access granularities
-// [64, 8, 2] words for "L1".  For f32 (4 bytes/elem):
-//   elem_words = 4 / 1 = 4
-//   min_words  = 1 src element * 4 = 4
-//   fitAccess(4) → size_in_words=8 (smallest entry >= 4)
+// Send side — L1LU load granularity (access_granularity-aligned):
+//   L1LU word_size=1 (byte), access granularities [64, 8, 2] words for "L1".
+//   For f32 (4 bytes/elem): elem_words=4, min_words=4, fitAccess(4)→8 words
 //   load_elements = 8 / 4 = 2   repetition = 64 / 2 = 32
+//   agen.vector_load vector<2xf32>
+//   vectorchain.shuffle indices=[0,1] rep=32 → vector<64xf32>
 //
-// Send side: agen.vector_load produces vector<2xf32>
-//            vectorchain.shuffle indices=[0,1] rep=32 → vector<64xf32>
-//
-// Receive side: dataflow.receive produces vector<64xf32>
-//               vectorchain.shuffle indices=[0,0] rep=32 → vector<64xf32>
+// Receive side — SFU sub_simd_lanes (arch-declared shuffle granularity):
+//   SFU sub_simd_lanes for f32 = 8  →  repetition = 64 / 8 = 8
+//   dataflow.receive vector<64xf32>
+//   vectorchain.shuffle indices=[0,0,0,0,0,0,0,0] rep=8 → vector<64xf32>
 
 // CHECK-LABEL: func.func @splat_granularity_f32
 // --- load-unit program_unit (L1LU) ---
@@ -26,7 +25,7 @@
 // CHECK:       dataflow.program_unit
 // CHECK:         %[[RECV:.+]] = dataflow.receive
 // CHECK-SAME:      vector<64xf32>
-// CHECK-NEXT:    %[[RECV_SHUF:.+]] = vectorchain.shuffle input(%[[RECV]]) {indices = [0 : i32, 0 : i32], repetition = 32 : i32} : vector<64xf32>, vector<64xf32>
+// CHECK-NEXT:    %[[RECV_SHUF:.+]] = vectorchain.shuffle input(%[[RECV]]) {indices = [0 : i32, 0 : i32, 0 : i32, 0 : i32, 0 : i32, 0 : i32, 0 : i32, 0 : i32], repetition = 8 : i32} : vector<64xf32>, vector<64xf32>
 // CHECK:         "test.use"(%[[RECV_SHUF]])
 
 module {

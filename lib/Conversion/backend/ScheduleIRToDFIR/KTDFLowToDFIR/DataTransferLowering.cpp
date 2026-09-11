@@ -588,13 +588,24 @@ struct LowerDataTransferPattern
       return mlir::failure();
     }
 
-    // When splat: determine the effective load width from the arch's
-    // access_granularity, then shuffle to the full destination width.
+    // When splat: verify the load unit declares the splat capability, then
+    // determine the effective load width from the arch's access_granularity
+    // and shuffle to the full destination width.
     int64_t load_elements = src_total_elements;
     if (is_splat) {
+      mlir::Attribute load_unit_kind = kindFromProgramUnit(program_unit);
+      auto simd_feature =
+          resource_kinds_.getFeature<mlir::ktdf_arch::feature::SIMD>(
+              load_unit_kind);
+      if (!simd_feature || !simd_feature.canSplat()) {
+        data_transfer_op.emitError(
+            "splat data_transfer requires the load unit to declare "
+            "ktdf_arch.feature.simd = { splat, ... }");
+        return mlir::failure();
+      }
       load_elements = computeSplatGranularityElements(
-          src_total_elements, vector_type.getElementType(),
-          kindFromProgramUnit(program_unit), resource_kinds_);
+          src_total_elements, vector_type.getElementType(), load_unit_kind,
+          resource_kinds_);
       if (vector_type.getNumElements() % load_elements != 0) {
         data_transfer_op.emitError(
             "dst_total_elements must be divisible by the effective splat "

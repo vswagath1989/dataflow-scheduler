@@ -128,27 +128,19 @@ struct LowerReadFromFifoPattern
         splat_attr && mlir::cast<mlir::BoolAttr>(splat_attr).getValue();
 
     if (is_splat) {
-      // The FIFO src endpoint names the load unit. Use that
-      // directly for the granularity query — the enclosing program_unit is the
-      // compute unit which has no Load feature.
-      auto src_attr =
-          mlir::dyn_cast_or_null<mlir::StringAttr>(fifo_slot_type.getSrc());
-      mlir::Attribute kind =
-          src_attr ? mlir::StringAttr::get(src_attr.getContext(),
-                                           src_attr.getValue().upper())
-                   : mlir::Attribute{};
+      // The enclosing program_unit names the compute unit.  The
+      // shuffle granularity on the receive side must come from that unit's
+      // SIMD spec (sub_simd_lanes / shuffle_modes).
+      mlir::Attribute compute_kind =
+          getEnclosingProgramUnitResourceType(read_op).value_or(
+              mlir::Attribute{});
 
-      // The granularity query iterates all memory spaces declared in the Load
-      // feature (memory space is stripped by buildLogicalMemoryViews before
-      // lowering patterns run).
       int64_t fifo_elements = vector_type.getNumElements();
-      // On the receive side we only need to know the granularity-aligned load
-      // width, not reproduce the exact source shape.  Query with 1 element so
-      // fitAccess returns the smallest declared granularity (in elements).
-      constexpr int64_t kSplatSrcElements = 1;
-      int64_t granularity_elements = computeSplatGranularityElements(
-          kSplatSrcElements, vector_type.getElementType(), kind,
-          resource_kinds_);
+      auto sub_simd_or_err = computeSplatSubSimdElements(
+          fifo_elements, vector_type.getElementType(), compute_kind,
+          resource_kinds_, read_op.getOperation());
+      if (mlir::failed(sub_simd_or_err)) return mlir::failure();
+      int64_t granularity_elements = sub_simd_or_err.value();
 
       // Re-express the splat on the received vector.  The receive already
       // holds a full fifo_elements-wide value.  The send side loaded
@@ -160,10 +152,9 @@ struct LowerReadFromFifoPattern
       //   indices    = [0, 0, ..., 0]  (length = granularity_elements)
       //   repetition = fifo_elements / granularity_elements
       //
-      // Example: fifo_elements=32, granularity_elements=2 →
-      //   indices = [0, 0], repetition = 16
-      if (granularity_elements > kSplatSrcElements &&
-          granularity_elements <= fifo_elements &&
+      // Example: fifo_elements=64, granularity_elements=8 →
+      //   indices = [0,0,0,0,0,0,0,0], repetition = 8
+      if (granularity_elements > 1 && granularity_elements <= fifo_elements &&
           fifo_elements % granularity_elements == 0) {
         llvm::SmallVector<mlir::Attribute> index_attrs(
             granularity_elements,
