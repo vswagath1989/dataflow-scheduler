@@ -26,6 +26,7 @@
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/ADT/StringExtras.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
+#include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/Dialect/MemRef/IR/MemRef.h>
 #include <mlir/Dialect/SCF/IR/SCF.h>
 #include <mlir/IR/BuiltinAttributes.h>
@@ -161,14 +162,84 @@ struct LowerReadFromFifoPattern
             rewriter.getIntegerAttr(rewriter.getI32Type(), 0));
         int32_t repetition =
             static_cast<int32_t>(fifo_elements / granularity_elements);
-        result = mlir::vectorchain::ShuffleOp::create(
-                     rewriter, read_op.getLoc(), vector_type, result,
-                     /*variable=*/mlir::ValueRange{},
-                     /*pad=*/mlir::ValueRange{},
-                     /*mask=*/nullptr, /*dbgName=*/nullptr,
-                     rewriter.getArrayAttr(index_attrs),
-                     rewriter.getI32IntegerAttr(repetition))
-                     .getOutput();
+        mlir::Value shuffled =
+            mlir::vectorchain::ShuffleOp::create(
+                rewriter, read_op.getLoc(), vector_type, result,
+                /*variable=*/mlir::ValueRange{},
+                /*pad=*/mlir::ValueRange{},
+                /*mask=*/nullptr, /*dbgName=*/nullptr,
+                rewriter.getArrayAttr(index_attrs),
+                rewriter.getI32IntegerAttr(repetition))
+                .getOutput();
+
+        // The shuffle output must be materialised through the compute unit's
+        // register file (store → load) before it can feed the next operation.
+        // Registers are accessed via dataflow.get_logical_memory_view, not a
+        // bare memref.alloc.
+        //
+        // Step 1: find or create a dataflow.get_unit for the register file at
+        // function scope.  The type tag is the lowercased register space name,
+        // e.g. "SFU" → "sfu_reg".
+        auto compute_kind_str =
+            mlir::cast<mlir::StringAttr>(compute_kind).getValue();
+        std::string reg_type_tag =
+            llvm::StringRef((llvm::Twine(compute_kind_str) + "_REG").str())
+                .lower();
+
+        auto func_op = read_op->getParentOfType<mlir::func::FuncOp>();
+        assert(func_op && "read_from_fifo must be inside a func.func");
+
+        mlir::Value reg_unit;
+        func_op.getBody().front().walk([&](mlir::dataflow::GetUnitOp get_unit) {
+          if (reg_unit) return;
+          auto type_attr = get_unit->getAttrOfType<mlir::StringAttr>("type");
+          if (type_attr && type_attr.getValue() == reg_type_tag)
+            reg_unit = get_unit.getUnit();
+        });
+
+        if (!reg_unit) {
+          // No register-file unit exists yet — emit one at function scope,
+          // just before the first program_unit.
+          mlir::Block& entry = func_op.getBody().front();
+          mlir::Operation* insert_before = nullptr;
+          for (mlir::Operation& op : entry) {
+            if (mlir::isa<mlir::dataflow::ProgramUnitOp>(op)) {
+              insert_before = &op;
+              break;
+            }
+          }
+          mlir::OpBuilder func_builder(rewriter.getContext());
+          if (insert_before)
+            func_builder.setInsertionPoint(insert_before);
+          else
+            func_builder.setInsertionPointToEnd(&entry);
+
+          auto reg_unit_op = mlir::dataflow::GetUnitOp::create(
+              func_builder, read_op.getLoc(),
+              mlir::TypeRange{func_builder.getIndexType()}, reg_type_tag,
+              reg_type_tag);
+          reg_unit = reg_unit_op.getUnit();
+        }
+
+        // Step 2: emit dataflow.get_logical_memory_view at address 0 with a
+        // 1-D identity layout map (contiguous, no offset).
+        auto plain_reg_type = mlir::MemRefType::get(
+            {fifo_elements}, vector_type.getElementType());
+        mlir::AffineMap layout_map =
+            mlir::AffineMap::getMultiDimIdentityMap(1, rewriter.getContext());
+        mlir::Value start_addr =
+            mlir::arith::ConstantIndexOp::create(rewriter, read_op.getLoc(), 0);
+        mlir::Value reg_view =
+            mlir::dataflow::GetLogicalMemoryViewOp::create(
+                rewriter, read_op.getLoc(), plain_reg_type, reg_unit,
+                start_addr, mlir::AffineMapAttr::get(layout_map))
+                .getData();
+
+        // Step 3: store the shuffled vector into the register view, then load
+        // it back so the consumer receives a view-backed value.
+        emitVectorStore(rewriter, read_op.getLoc(), shuffled, reg_view);
+        result =
+            emitVectorLoad(rewriter, read_op.getLoc(), vector_type, reg_view);
       }
     }
 

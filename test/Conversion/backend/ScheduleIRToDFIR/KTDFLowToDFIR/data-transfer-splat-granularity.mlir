@@ -23,26 +23,36 @@
 
 // CHECK-DAG: #[[MAP:.+]] = affine_map<(d0) -> (d0)>
 // CHECK-DAG: #[[SET:.+]] = affine_set<(d0) : (d0 >= 0, -d0 + 1 >= 0)>
+// CHECK-DAG: #[[REG_SET:.+]] = affine_set<(d0) : (d0 >= 0, -d0 + 63 >= 0)>
 
 // CHECK-LABEL: func.func @splat_granularity_f32
+// CHECK:         %[[C0:.+]] = arith.constant 0 : index
+// CHECK:         %[[U0:.+]] = dataflow.get_unit {core = 0 : i32, name = "C0-L1LU", type = "L1LU"} : index
+// CHECK:         %[[U1:.+]] = dataflow.get_unit {core = 1 : i32, name = "C1-L1LU", type = "L1LU"} : index
+// CHECK:         %[[V0:.+]] = dataflow.get_unit {core = 0 : i32, name = "C0-SFU", type = "SFU"} : index
+// CHECK:         %[[V1:.+]] = dataflow.get_unit {core = 1 : i32, name = "C1-SFU", type = "SFU"} : index
+// CHECK:         %[[REG_UNIT:.+]] = dataflow.get_unit {name = "sfu_reg", type = "sfu_reg"} : index
 // --- load-unit program_unit (L1LU) ---
-// CHECK:       dataflow.program_unit iter_arg : %[[ITER_L:.+]] -> (%[[U0:.+]], %[[U1:.+]]) :
+// CHECK:       dataflow.program_unit iter_arg : %[[ITER_L:.+]] -> (%[[U0]], %[[U1]]) :
 // CHECK:         %[[ALLOC:.+]] = memref.alloc() : memref<256xf32, "L1">
 // CHECK:         scf.for
 // CHECK:           %[[LOAD:.+]] = agen.vector_load %[[ALLOC]][%{{.*}}]
 // CHECK-SAME:        {load_order = #[[MAP]], load_set = #[[SET]]} : memref<256xf32, "L1">, vector<2xf32>
 // CHECK-NEXT:      %[[SEND_SHUF:.+]] = vectorchain.shuffle input(%[[LOAD]]) {indices = [0 : i32, 1 : i32], repetition = 32 : i32} : vector<2xf32>, vector<64xf32>
-// CHECK-NEXT:      %[[DST_MAP:.+]] = uniform.def_immutable_mapping([%[[U0]] -> %{{.*}}], [%[[U1]] -> %{{.*}}]):index
-// CHECK-NEXT:      %[[DST:.+]] = uniform.query_map(map:%[[DST_MAP]], key:%[[ITER_L]]) : index
-// CHECK-NEXT:      dataflow.send %[[DST]], %[[SEND_SHUF]] : vector<64xf32>
+// CHECK-NEXT:      %{{.*}} = uniform.def_immutable_mapping
+// CHECK-NEXT:      %{{.*}} = uniform.query_map
+// CHECK-NEXT:      dataflow.send %{{.*}}, %[[SEND_SHUF]] : vector<64xf32>
 // --- compute-unit program_unit (SFU) ---
-// CHECK:       dataflow.program_unit iter_arg : %[[ITER_C:.+]] -> (%[[V0:.+]], %[[V1:.+]]) :
+// CHECK:       dataflow.program_unit iter_arg : %[[ITER_C:.+]] -> (%[[V0]], %[[V1]]) :
 // CHECK:         scf.for
-// CHECK:           %[[SRC_MAP:.+]] = uniform.def_immutable_mapping([%[[V0]] -> %{{.*}}], [%[[V1]] -> %{{.*}}]):index
-// CHECK-NEXT:      %[[SRC:.+]] = uniform.query_map(map:%[[SRC_MAP]], key:%[[ITER_C]]) : index
+// CHECK:           %{{.*}} = uniform.def_immutable_mapping
+// CHECK-NEXT:      %[[SRC:.+]] = uniform.query_map
 // CHECK-NEXT:      %[[RECV:.+]] = dataflow.receive %[[SRC]] : vector<64xf32>
 // CHECK-NEXT:      %[[RECV_SHUF:.+]] = vectorchain.shuffle input(%[[RECV]]) {indices = [0 : i32, 0 : i32, 0 : i32, 0 : i32, 0 : i32, 0 : i32, 0 : i32, 0 : i32], repetition = 8 : i32} : vector<64xf32>, vector<64xf32>
-// CHECK-NEXT:      "test.use"(%[[RECV_SHUF]])
+// CHECK-NEXT:      %[[REG_VIEW:.+]] = dataflow.get_logical_memory_view %[[REG_UNIT]], %[[C0]] {layout_map = #[[MAP]]} : index, index, memref<64xf32>
+// CHECK-NEXT:      agen.vector_store %[[RECV_SHUF]], %[[REG_VIEW]][%{{.*}}] {store_order = #[[MAP]], store_set = #[[REG_SET]]} : memref<64xf32>, vector<64xf32>
+// CHECK-NEXT:      %[[RESULT:.+]] = agen.vector_load %[[REG_VIEW]][%{{.*}}] {load_order = #[[MAP]], load_set = #[[REG_SET]]} : memref<64xf32>, vector<64xf32>
+// CHECK-NEXT:      "test.use"(%[[RESULT]])
 
 module {
   ktdf_arch.device @sample_device attributes {} import("../../../../Dialect/KTDFArch/sample_device.mlir")
