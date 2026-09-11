@@ -20,6 +20,7 @@
 
 #include <mlir/IR/BuiltinTypeInterfaces.h>
 
+#include "dataflow-scheduler/Conversion/Utils/Utils.h"
 #include "dataflow-scheduler/Dialect/Agen/Agen.h"
 #include "dataflow-scheduler/Dialect/Dataflow/Dataflow.h"
 #include "dataflow-scheduler/Dialect/Dataflow/Utils.h"
@@ -28,6 +29,7 @@
 #include "dataflow-scheduler/Dialect/KTDFArch/KTDFArch.h"
 #include "dataflow-scheduler/Dialect/KTDFArch/KTDFArchIntrinsics.h"
 #include "dataflow-scheduler/Dialect/Uniform/Uniform.h"
+#include "dataflow-scheduler/Dialect/VectorChain/VectorChain.h"
 #include "dataflow-scheduler/Utils/SchedulerExtContext.h"
 #include "ktir/Dialect/KTDP/KTDP.h"
 #include "llvm/ADT/SmallVector.h"
@@ -45,19 +47,7 @@ std::optional<scheduler::ResourceType>
 scheduler::getEnclosingProgramUnitResourceType(mlir::Operation* op) {
   auto pu = op->getParentOfType<mlir::dataflow::ProgramUnitOp>();
   if (!pu || pu.getUnits().empty()) return std::nullopt;
-
-  mlir::Value first_unit = pu.getUnits().front();
-
-  // Direct dataflow.get_unit operand (already-lowered program_unit).
-  if (auto get_unit = mlir::dyn_cast_or_null<mlir::dataflow::GetUnitOp>(
-          first_unit.getDefiningOp())) {
-    auto type_attr = get_unit->getAttrOfType<mlir::StringAttr>("type");
-    if (type_attr)
-      return mlir::StringAttr::get(op->getContext(),
-                                   type_attr.getValue().upper());
-  }
-
-  return std::nullopt;
+  return scheduler::getUnitResourceType(pu.getUnits().front());
 }
 
 int64_t scheduler::getVectorLanes(mlir::Type elem_type,
@@ -312,4 +302,141 @@ llvm::FailureOr<scheduler::DataTransferType> scheduler::getDataTransferType(
 
   // Both source and destination are FIFO slots - unsupported
   return llvm::failure();
+}
+
+mlir::Value scheduler::insertSplatShuffle(mlir::OpBuilder& builder,
+                                          mlir::Location loc,
+                                          mlir::Value src_vec,
+                                          int64_t src_elements,
+                                          int64_t dst_elements) {
+  assert(src_elements > 0 && "splat source width must be positive");
+  assert(dst_elements % src_elements == 0 &&
+         "splat destination width must be a multiple of the source width");
+
+  auto src_vec_type = mlir::cast<mlir::VectorType>(src_vec.getType());
+  auto elem_type = src_vec_type.getElementType();
+
+  llvm::SmallVector<mlir::Attribute> index_attrs;
+  for (int64_t i = 0; i < src_elements; ++i) {
+    index_attrs.push_back(builder.getIntegerAttr(builder.getI32Type(), i));
+  }
+  auto indices_attr = builder.getArrayAttr(index_attrs);
+  int32_t repetition = static_cast<int32_t>(dst_elements / src_elements);
+  auto result_type = mlir::VectorType::get({dst_elements}, elem_type);
+
+  return mlir::vectorchain::ShuffleOp::create(
+             builder, loc, result_type, src_vec,
+             /*variable=*/mlir::ValueRange{}, /*pad=*/mlir::ValueRange{},
+             /*mask=*/nullptr, /*dbgName=*/nullptr, indices_attr,
+             builder.getI32IntegerAttr(repetition))
+      .getOutput();
+}
+
+llvm::FailureOr<int64_t> scheduler::computeSplatSubSimdElements(
+    int64_t dst_total_elements, mlir::Type elem_type, mlir::Attribute kind,
+    const mlir::ktdf_arch::ResourceKinds& resource_kinds,
+    mlir::Operation* op_for_errors) {
+  if (!kind) return dst_total_elements;
+
+  auto simd_feature =
+      resource_kinds.getFeature<mlir::ktdf_arch::feature::SIMD>(kind);
+  if (!simd_feature) return dst_total_elements;
+
+  // Verify the compute unit declares FirstSubSimdLaneToEachSubSimd.
+  auto shuffle_modes =
+      simd_feature.getAttr<mlir::DictionaryAttr>("shuffle_modes");
+  if (!shuffle_modes || !shuffle_modes.get("FirstSubSimdLaneToEachSubSimd")) {
+    op_for_errors->emitError(
+        "splat receive requires the compute unit to declare "
+        "shuffle_modes = { FirstSubSimdLaneToEachSubSimd } in "
+        "ktdf_arch.feature.simd");
+    return mlir::failure();
+  }
+
+  // Read sub_simd_lanes for elem_type.
+  auto sub_simd_lanes =
+      simd_feature.getAttr<mlir::ktdf_arch::feature::SIMD::LanesAttr>(
+          "sub_simd_lanes");
+  if (!sub_simd_lanes) return dst_total_elements;
+
+  int64_t lane_count =
+      sub_simd_lanes.getValue(mlir::TypeAttr::get(elem_type)).value_or(0);
+  if (lane_count <= 0) return dst_total_elements;
+
+  return lane_count;
+}
+
+int64_t scheduler::computeSplatGranularityElements(
+    int64_t src_total_elements, mlir::Type elem_type, mlir::Attribute kind,
+    const mlir::ktdf_arch::ResourceKinds& resource_kinds) {
+  if (!kind) return src_total_elements;
+
+  auto load_feature =
+      resource_kinds.getFeature<mlir::ktdf_arch::feature::Load>(kind);
+  if (!load_feature) return src_total_elements;
+
+  // The memory space is not available at lowering time (stripped by
+  // buildLogicalMemoryViews).  Iterate all memory spaces declared in the Load
+  // feature and return the smallest fitting granularity across all of them.
+  auto tryWithSpace = [&](mlir::Attribute space) -> int64_t {
+    auto granularity_list = load_feature.getAccessGranularity(space);
+    if (!granularity_list) return src_total_elements;
+
+    size_t elem_bytes =
+        (static_cast<size_t>(elem_type.getIntOrFloatBitWidth()) + 7) / 8;
+    size_t word_size = load_feature.getWordSize(space);
+    if (word_size == 0) return src_total_elements;
+
+    // elem_words: number of words one element occupies (always >= 1).
+    size_t elem_words = (elem_bytes + word_size - 1) / word_size;
+
+    // Minimum load size in words to cover all src elements.
+    size_t min_words = static_cast<size_t>(src_total_elements) * elem_words;
+
+    auto best = granularity_list.fitAccess(min_words);
+    if (!best) return src_total_elements;
+
+    int64_t load_elements =
+        static_cast<int64_t>(best.getSizeInWords() / elem_words);
+    return std::max(load_elements, src_total_elements);
+  };
+
+  auto gran_map = load_feature.getAccessGranularity();
+  if (!gran_map) return src_total_elements;
+
+  // Walk every declared memory space and keep the smallest fitting granularity
+  // found across all of them.  The first result wins as the initial best;
+  // subsequent results only replace it when they are strictly smaller.
+  int64_t best_result = src_total_elements;
+  bool found_any = false;
+  for (auto [space_attr, _] : gran_map) {
+    int64_t result = tryWithSpace(space_attr);
+    if (!found_any || result < best_result) {
+      best_result = result;
+      found_any = true;
+    }
+  }
+  return best_result;
+}
+
+mlir::Attribute scheduler::getComputeRegisterKind(
+    mlir::Attribute compute_kind,
+    const mlir::ktdf_arch::ResourceKinds& resource_kinds) {
+  if (!compute_kind) return nullptr;
+
+  // The register file is the MemoryOp whose exemplar shares the same parent
+  // GroupOp as the compute unit's exemplar.
+  const auto& compute_entry = resource_kinds[compute_kind];
+  if (!compute_entry) return nullptr;
+
+  mlir::Operation* compute_parent = compute_entry.getExemplar()->getParentOp();
+  if (!compute_parent) return nullptr;
+
+  for (const auto& kind : resource_kinds) {
+    auto mem_op = mlir::dyn_cast<mlir::ktdf_arch::MemoryOp>(kind.getExemplar());
+    if (!mem_op) continue;
+    if (mem_op->getParentOp() != compute_parent) continue;
+    return kind.getKind();
+  }
+  return nullptr;
 }

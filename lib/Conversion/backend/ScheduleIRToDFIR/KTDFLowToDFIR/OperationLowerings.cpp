@@ -26,6 +26,7 @@
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/ADT/StringExtras.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
+#include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/Dialect/MemRef/IR/MemRef.h>
 #include <mlir/Dialect/SCF/IR/SCF.h>
 #include <mlir/IR/BuiltinAttributes.h>
@@ -54,6 +55,7 @@
 #include "dataflow-scheduler/Dialect/KTDFArch/KTDFArchAttributes.h"
 #include "dataflow-scheduler/Dialect/KTDFLowering/KTDFLowering.h"
 #include "dataflow-scheduler/Dialect/Uniform/Uniform.h"
+#include "dataflow-scheduler/Dialect/VectorChain/VectorChain.h"
 #include "dataflow-scheduler/Utils/SchedulerExtContext.h"
 
 #define DEBUG_TYPE "ktdflowering-to-dfir"
@@ -113,8 +115,142 @@ struct LowerReadFromFifoPattern
         rewriter, read_op.getLoc(), vector_type, queried_unit,
         /*dbgName=*/nullptr);
 
-    // Replace the read_from_fifo with the receive operation
-    rewriter.replaceOp(read_op, receive_op.getData());
+    // If the FIFO was filled by a splat data_transfer, the send side widened
+    // its load to the arch's minimum access granularity and shuffled to the
+    // full vector width.  The receive side mirrors that with a matching
+    // shuffle.
+    //
+    // read_with_splat = true is set by a pre-pass walk that runs before
+    // buildProgramUnits in KTDFLowToDFIRPass::runOnOperation (see
+    // KTDFLowToDFIR.cpp), so we read it directly here.
+    mlir::Value result = receive_op.getData();
+    auto splat_attr = read_op->getDiscardableAttr("read_with_splat");
+    bool is_splat =
+        splat_attr && mlir::cast<mlir::BoolAttr>(splat_attr).getValue();
+
+    if (is_splat) {
+      // The enclosing program_unit names the compute unit.  The
+      // shuffle granularity on the receive side must come from that unit's
+      // SIMD spec (sub_simd_lanes / shuffle_modes).
+      mlir::Attribute compute_kind =
+          getEnclosingProgramUnitResourceType(read_op).value_or(
+              mlir::Attribute{});
+
+      int64_t fifo_elements = vector_type.getNumElements();
+      auto sub_simd_or_err = computeSplatSubSimdElements(
+          fifo_elements, vector_type.getElementType(), compute_kind,
+          resource_kinds_, read_op.getOperation());
+      if (mlir::failed(sub_simd_or_err)) return mlir::failure();
+      int64_t granularity_elements = sub_simd_or_err.value();
+
+      // Re-express the splat on the received vector.  The receive already
+      // holds a full fifo_elements-wide value.  The send side loaded
+      // granularity_elements values and broadcast them; the receive mirrors
+      // that by emitting a shuffle with granularity_elements all-zero indices
+      // (each pointing at element 0 of the received vector) repeated until
+      // the full width is covered:
+      //
+      //   indices    = [0, 0, ..., 0]  (length = granularity_elements)
+      //   repetition = fifo_elements / granularity_elements
+      //
+      // Example: fifo_elements=64, granularity_elements=8 →
+      //   indices = [0,0,0,0,0,0,0,0], repetition = 8
+      if (granularity_elements > 1 && granularity_elements <= fifo_elements &&
+          fifo_elements % granularity_elements == 0) {
+        llvm::SmallVector<mlir::Attribute> index_attrs(
+            granularity_elements,
+            rewriter.getIntegerAttr(rewriter.getI32Type(), 0));
+        int32_t repetition =
+            static_cast<int32_t>(fifo_elements / granularity_elements);
+        mlir::Value shuffled =
+            mlir::vectorchain::ShuffleOp::create(
+                rewriter, read_op.getLoc(), vector_type, result,
+                /*variable=*/mlir::ValueRange{},
+                /*pad=*/mlir::ValueRange{},
+                /*mask=*/nullptr, /*dbgName=*/nullptr,
+                rewriter.getArrayAttr(index_attrs),
+                rewriter.getI32IntegerAttr(repetition))
+                .getOutput();
+
+        // The shuffle output must be materialised through the compute unit's
+        // register file (store → load) before it can feed the next operation.
+        // Registers are accessed via dataflow.get_logical_memory_view, not a
+        // bare memref.alloc.
+        //
+        // Step 1: find or create a dataflow.get_unit for the register file at
+        // function scope.  The register file kind is looked up from the arch
+        // as the MemoryOp co-located with the compute unit in the same group.
+        // The type tag used in dataflow.get_unit is its lowercased kind string.
+        mlir::Attribute reg_kind =
+            getComputeRegisterKind(compute_kind, resource_kinds_);
+        if (!reg_kind) {
+          read_op.emitError(
+              "splat receive: no register-file memory found in the same "
+              "arch group as the compute unit");
+          return mlir::failure();
+        }
+        std::string reg_type_tag =
+            mlir::cast<mlir::StringAttr>(reg_kind).getValue().lower();
+
+        auto func_op = read_op->getParentOfType<mlir::func::FuncOp>();
+        assert(func_op && "read_from_fifo must be inside a func.func");
+
+        mlir::Value reg_unit;
+        func_op.getBody().front().walk([&](mlir::dataflow::GetUnitOp get_unit) {
+          if (reg_unit) return;
+          auto type_attr = get_unit->getAttrOfType<mlir::StringAttr>("type");
+          if (type_attr && type_attr.getValue() == reg_type_tag)
+            reg_unit = get_unit.getUnit();
+        });
+
+        if (!reg_unit) {
+          // No register-file unit exists yet — emit one at function scope,
+          // just before the first program_unit.
+          mlir::Block& entry = func_op.getBody().front();
+          mlir::Operation* insert_before = nullptr;
+          for (mlir::Operation& op : entry) {
+            if (mlir::isa<mlir::dataflow::ProgramUnitOp>(op)) {
+              insert_before = &op;
+              break;
+            }
+          }
+          mlir::OpBuilder func_builder(rewriter.getContext());
+          if (insert_before)
+            func_builder.setInsertionPoint(insert_before);
+          else
+            func_builder.setInsertionPointToEnd(&entry);
+
+          auto reg_unit_op = mlir::dataflow::GetUnitOp::create(
+              func_builder, read_op.getLoc(),
+              mlir::TypeRange{func_builder.getIndexType()}, reg_type_tag,
+              reg_type_tag);
+          reg_unit = reg_unit_op.getUnit();
+        }
+
+        // Step 2: emit dataflow.get_logical_memory_view at address 0 with a
+        // 1-D identity layout map (contiguous, no offset).
+        auto plain_reg_type = mlir::MemRefType::get(
+            {fifo_elements}, vector_type.getElementType());
+        mlir::AffineMap layout_map =
+            mlir::AffineMap::getMultiDimIdentityMap(1, rewriter.getContext());
+        mlir::Value start_addr =
+            mlir::arith::ConstantIndexOp::create(rewriter, read_op.getLoc(), 0);
+        mlir::Value reg_view =
+            mlir::dataflow::GetLogicalMemoryViewOp::create(
+                rewriter, read_op.getLoc(), plain_reg_type, reg_unit,
+                start_addr, mlir::AffineMapAttr::get(layout_map))
+                .getData();
+
+        // Step 3: store the shuffled vector into the register view, then load
+        // it back so the consumer receives a view-backed value.
+        emitVectorStore(rewriter, read_op.getLoc(), shuffled, reg_view);
+        result =
+            emitVectorLoad(rewriter, read_op.getLoc(), vector_type, reg_view);
+      }
+    }
+
+    // Replace the read_from_fifo with the (possibly shuffled) result
+    rewriter.replaceOp(read_op, result);
 
     return mlir::success();
   }

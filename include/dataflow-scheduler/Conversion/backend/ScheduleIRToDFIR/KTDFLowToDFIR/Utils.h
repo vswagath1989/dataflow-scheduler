@@ -36,6 +36,7 @@
 #include "mlir/IR/Location.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/IR/Types.h"
 #include "mlir/IR/Value.h"
 
 namespace scheduler {
@@ -114,6 +115,15 @@ mlir::Value emitVectorLoad(mlir::OpBuilder& builder, mlir::Location loc,
 void emitVectorStore(mlir::OpBuilder& builder, mlir::Location loc,
                      mlir::Value value, mlir::Value memref);
 
+/// Create a vectorchain.shuffle that broadcasts `src_vec`
+/// (vector<src_elements x T>) to vector<dst_elements x T> using indices
+/// [0..src_elements-1] with repetition = dst_elements / src_elements.
+/// `src_elements` must be positive and must divide `dst_elements` evenly;
+/// callers are expected to have validated (and diagnosed) that beforehand.
+mlir::Value insertSplatShuffle(mlir::OpBuilder& builder, mlir::Location loc,
+                               mlir::Value src_vec, int64_t src_elements,
+                               int64_t dst_elements);
+
 /// Determine the data transfer type based on source and destination types.
 /// @param src_is_fifo True if source is a FIFO slot, false if memref
 /// @param dst_is_fifo True if destination is a FIFO slot, false if memref
@@ -121,6 +131,44 @@ void emitVectorStore(mlir::OpBuilder& builder, mlir::Location loc,
 /// ReceiveAndStore), or failure if both sides are FIFOs (unsupported).
 llvm::FailureOr<scheduler::DataTransferType> getDataTransferType(
     bool src_is_fifo, bool dst_is_fifo);
+
+/// Compute the number of elements to load/receive in a splat transfer, rounded
+/// up to the smallest access granularity of the load unit that covers all
+/// source elements.
+///
+/// Iterates all memory spaces declared in the Load feature for `kind` and
+/// returns the smallest fitting granularity found across all of them.
+///
+/// Falls back to `src_total_elements` when arch info is unavailable or no
+/// fitting granularity exists.
+int64_t computeSplatGranularityElements(
+    int64_t src_total_elements, mlir::Type elem_type, mlir::Attribute kind,
+    const mlir::ktdf_arch::ResourceKinds& resource_kinds);
+
+/// Compute the sub-SIMD lane count for a splat shuffle on a compute unit.
+///
+/// Reads `sub_simd_lanes` from the SIMD feature of `kind`, looks up
+/// `elem_type`, and returns that count as the shuffle granularity.
+/// Also verifies that the SIMD feature declares
+/// `shuffle_modes = { FirstSubSimdLaneToEachSubSimd }`: if not, emits an
+/// error on `op_for_errors` and returns failure.
+///
+/// Falls back to `dst_total_elements` (no shuffle) when the SIMD feature or
+/// `sub_simd_lanes` is absent.
+llvm::FailureOr<int64_t> computeSplatSubSimdElements(
+    int64_t dst_total_elements, mlir::Type elem_type, mlir::Attribute kind,
+    const mlir::ktdf_arch::ResourceKinds& resource_kinds,
+    mlir::Operation* op_for_errors);
+
+/// Return the kind attribute of the register-file memory that is co-located
+/// with the compute unit of kind `compute_kind` in the arch graph.
+///
+/// "Co-located" means the register-file memory's exemplar lives in the same
+/// parent GroupOp as the compute unit's exemplar (e.g. SFP_LRFREG shares the
+/// SFP_Block group with SFP).  Returns nullptr when no such memory is found.
+mlir::Attribute getComputeRegisterKind(
+    mlir::Attribute compute_kind,
+    const mlir::ktdf_arch::ResourceKinds& resource_kinds);
 
 }  // namespace scheduler
 
