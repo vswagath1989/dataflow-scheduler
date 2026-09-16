@@ -115,33 +115,31 @@ struct LowerReadFromFifoPattern
         rewriter, read_op.getLoc(), vector_type, queried_unit,
         /*dbgName=*/nullptr);
 
-    // If the FIFO was filled by a splat data_transfer, the send side widened
-    // its load to the arch's minimum access granularity and shuffled to the
-    // full vector width.  The receive side mirrors that with a matching
-    // shuffle.
-    //
-    // read_with_splat = true is set by a pre-pass walk that runs before
-    // buildProgramUnits in KTDFLowToDFIRPass::runOnOperation (see
-    // KTDFLowToDFIR.cpp), so we read it directly here.
+    // If the FIFO was filled by a splat data_transfer with actual widening,
+    // SplatAnnotationPass sets read_with_splat = true on this op and stores
+    // the arch-derived shuffle parameters as splat_granularity_elements and
+    // splat_register_kind.  Emit a matching shuffle on the receive side.
     mlir::Value result = receive_op.getData();
     auto splat_attr = read_op->getDiscardableAttr("read_with_splat");
     bool is_splat =
         splat_attr && mlir::cast<mlir::BoolAttr>(splat_attr).getValue();
 
     if (is_splat) {
-      // The enclosing program_unit names the compute unit.  The
-      // shuffle granularity on the receive side must come from that unit's
-      // SIMD spec (sub_simd_lanes / shuffle_modes).
-      mlir::Attribute compute_kind =
-          getEnclosingProgramUnitResourceType(read_op).value_or(
-              mlir::Attribute{});
-
+      // Read the sub-SIMD shuffle granularity and register-file kind that
+      // SplatAnnotationPass derived from the arch and stored as attributes.
+      auto gran_attr =
+          read_op->getDiscardableAttr("splat_granularity_elements");
+      auto reg_kind_attr = read_op->getDiscardableAttr("splat_register_kind");
+      if (!gran_attr || !reg_kind_attr) {
+        read_op.emitError(
+            "splat read_from_fifo is missing splat_granularity_elements or "
+            "splat_register_kind annotation — run SplatAnnotationPass before "
+            "KTDFLowToDFIRPass");
+        return mlir::failure();
+      }
       int64_t fifo_elements = vector_type.getNumElements();
-      auto sub_simd_or_err = computeSplatSubSimdElements(
-          fifo_elements, vector_type.getElementType(), compute_kind,
-          resource_kinds_, read_op.getOperation());
-      if (mlir::failed(sub_simd_or_err)) return mlir::failure();
-      int64_t granularity_elements = sub_simd_or_err.value();
+      int64_t granularity_elements =
+          mlir::cast<mlir::IntegerAttr>(gran_attr).getInt();
 
       // Re-express the splat on the received vector.  The receive already
       // holds a full fifo_elements-wide value.  The send side loaded
@@ -178,19 +176,10 @@ struct LowerReadFromFifoPattern
         // bare memref.alloc.
         //
         // Step 1: find or create a dataflow.get_unit for the register file at
-        // function scope.  The register file kind is looked up from the arch
-        // as the MemoryOp co-located with the compute unit in the same group.
-        // The type tag used in dataflow.get_unit is its lowercased kind string.
-        mlir::Attribute reg_kind =
-            getComputeRegisterKind(compute_kind, resource_kinds_);
-        if (!reg_kind) {
-          read_op.emitError(
-              "splat receive: no register-file memory found in the same "
-              "arch group as the compute unit");
-          return mlir::failure();
-        }
+        // function scope.  The register file kind tag was annotated by
+        // SplatAnnotationPass as splat_register_kind.
         std::string reg_type_tag =
-            mlir::cast<mlir::StringAttr>(reg_kind).getValue().lower();
+            mlir::cast<mlir::StringAttr>(reg_kind_attr).getValue().lower();
 
         auto func_op = read_op->getParentOfType<mlir::func::FuncOp>();
         assert(func_op && "read_from_fifo must be inside a func.func");

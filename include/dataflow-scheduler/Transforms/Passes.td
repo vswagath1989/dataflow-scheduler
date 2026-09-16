@@ -325,6 +325,38 @@ def ScalarBroadcastLegalizationPass
   let constructor = "::scheduler::createScalarBroadcastLegalizationPass()";
 }
 
+def SplatAnnotationPass : Pass<"splat-annotation", "mlir::ModuleOp"> {
+  let summary = "Annotate splat data_transfer ops and their consumers with arch-derived shuffle parameters";
+  let description = [{
+    Runs after ScalarBroadcastLegalizationPass.  For each
+    ktdf.data_transfer with transfer_mode="splat" it:
+      1. Validates that the load unit's SIMD feature declares the splat
+         capability.
+      2. Calls computeSplatGranularityElements to derive the effective load
+         width from the load unit's access_granularity arch attribute.
+      3. Annotates the data_transfer op with
+         splat_load_elements = <computed width>.
+      4. When the effective load width is wider than the source element count
+         (i.e. actual hardware widening occurs), annotates each consuming
+         ktdf.read_from_fifo with read_with_splat = true.
+
+    For each read_from_fifo that received read_with_splat = true it:
+      1. Resolves the compute unit kind from the enclosing ktdf.stage's
+         applicable_units attribute.
+      2. Calls computeSplatSubSimdElements against that unit's SIMD feature
+         (sub_simd_lanes / shuffle_modes).
+      3. Annotates the read_from_fifo with
+         splat_granularity_elements = <sub-simd lane count>.
+
+    The KTDFLowToDFIR lowering passes then read these attributes instead of
+    querying the arch at lowering time.
+  }];
+  let constructor = "::scheduler::createSplatAnnotationPass()";
+  let dependentDialects = [
+    "mlir::ktdf::KTDFDialect"
+  ];
+}
+
 def EnsureDeviceDeclarationPass
     : Pass<"ensure-device-declaration", "mlir::ModuleOp"> {
   let summary = "Ensure that there is a ktdf_arch.device declaration";

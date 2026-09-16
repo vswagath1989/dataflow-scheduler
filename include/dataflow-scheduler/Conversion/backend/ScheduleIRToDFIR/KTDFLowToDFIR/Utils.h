@@ -21,6 +21,7 @@
 
 #include <optional>
 
+#include "dataflow-scheduler/Conversion/Utils/Utils.h"
 #include "dataflow-scheduler/Conversion/backend/ScheduleIRToDFIR/KTDFLowToDFIR/UnitTypeDiscovery.h"
 #include "dataflow-scheduler/Dialect/Dataflow/Dataflow.h"
 #include "dataflow-scheduler/Dialect/KTDFArch/Analysis/ResourceKinds.h"
@@ -131,44 +132,6 @@ mlir::Value insertSplatShuffle(mlir::OpBuilder& builder, mlir::Location loc,
 /// ReceiveAndStore), or failure if both sides are FIFOs (unsupported).
 llvm::FailureOr<scheduler::DataTransferType> getDataTransferType(
     bool src_is_fifo, bool dst_is_fifo);
-
-/// Compute the number of elements to load/receive in a splat transfer, rounded
-/// up to the smallest access granularity of the load unit that covers all
-/// source elements.
-///
-/// Iterates all memory spaces declared in the Load feature for `kind` and
-/// returns the smallest fitting granularity found across all of them.
-///
-/// Falls back to `src_total_elements` when arch info is unavailable or no
-/// fitting granularity exists.
-int64_t computeSplatGranularityElements(
-    int64_t src_total_elements, mlir::Type elem_type, mlir::Attribute kind,
-    const mlir::ktdf_arch::ResourceKinds& resource_kinds);
-
-/// Compute the sub-SIMD lane count for a splat shuffle on a compute unit.
-///
-/// Reads `sub_simd_lanes` from the SIMD feature of `kind`, looks up
-/// `elem_type`, and returns that count as the shuffle granularity.
-/// Also verifies that the SIMD feature declares
-/// `shuffle_modes = { FirstSubSimdLaneToEachSubSimd }`: if not, emits an
-/// error on `op_for_errors` and returns failure.
-///
-/// Falls back to `dst_total_elements` (no shuffle) when the SIMD feature or
-/// `sub_simd_lanes` is absent.
-llvm::FailureOr<int64_t> computeSplatSubSimdElements(
-    int64_t dst_total_elements, mlir::Type elem_type, mlir::Attribute kind,
-    const mlir::ktdf_arch::ResourceKinds& resource_kinds,
-    mlir::Operation* op_for_errors);
-
-/// Return the kind attribute of the register-file memory that is co-located
-/// with the compute unit of kind `compute_kind` in the arch graph.
-///
-/// "Co-located" means the register-file memory's exemplar lives in the same
-/// parent GroupOp as the compute unit's exemplar (e.g. SFP_LRFREG shares the
-/// SFP_Block group with SFP).  Returns nullptr when no such memory is found.
-mlir::Attribute getComputeRegisterKind(
-    mlir::Attribute compute_kind,
-    const mlir::ktdf_arch::ResourceKinds& resource_kinds);
 
 }  // namespace scheduler
 

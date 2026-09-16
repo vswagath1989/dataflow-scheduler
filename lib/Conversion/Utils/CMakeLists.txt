@@ -10,5 +10,6 @@ add_dataflow_scheduler_library(DataflowSchedulerConversionUtils
   LINK_LIBS PUBLIC
     DataflowSchedulerDialects::DataflowDialect
     DataflowSchedulerDialects::KTDFDialect
+    DataflowSchedulerDialects::KTDFArchAnalysis
     DataflowSchedulerDialects::UniformDialect
 )

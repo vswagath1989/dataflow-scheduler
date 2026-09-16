@@ -40,21 +40,6 @@ using namespace scheduler;
 
 namespace {
 
-/// Resolve the resource kind attribute from the first unit of a program_unit.
-/// Returns nullptr if the kind cannot be determined.
-mlir::Attribute kindFromProgramUnit(
-    mlir::dataflow::ProgramUnitOp program_unit) {
-  if (!program_unit || program_unit.getUnits().empty()) return nullptr;
-  auto get_unit = program_unit.getUnits()
-                      .front()
-                      .getDefiningOp<mlir::dataflow::GetUnitOp>();
-  if (!get_unit) return nullptr;
-  auto type_attr = get_unit->getAttrOfType<mlir::StringAttr>("type");
-  if (!type_attr) return nullptr;
-  return mlir::StringAttr::get(get_unit->getContext(),
-                               type_attr.getValue().upper());
-}
-
 /// One time dimension of one side of a transfer: which memref dimension it
 /// advances, and by how many indices of that dimension per step.
 struct TransferTimeStep {
@@ -353,7 +338,7 @@ struct LowerDataTransferPattern
         return lowerAsLoadAndSend(rewriter, data_transfer_op, src_memref,
                                   src_indices, src_static_sizes, num_dims,
                                   vector_type, src_map, dst_fifo_slot_type,
-                                  is_broadcast_transfer, src_total_elements);
+                                  is_broadcast_transfer);
       }
 
       case DataTransferType::kReceiveAndStore: {
@@ -569,10 +554,9 @@ struct LowerDataTransferPattern
       mlir::ktdf::DataTransferOp data_transfer_op, mlir::Value src_memref,
       mlir::ValueRange src_indices, llvm::ArrayRef<int64_t> src_static_sizes,
       unsigned num_dims, mlir::VectorType vector_type, mlir::AffineMap src_map,
-      mlir::ktdf::FifoSlotType dst_fifo_slot_type, bool is_splat,
-      int64_t src_total_elements) const {
-    // Find the enclosing program_unit (needed both for the splat granularity
-    // query and for the send destination resolution below).
+      mlir::ktdf::FifoSlotType dst_fifo_slot_type, bool is_splat) const {
+    // Find the enclosing program_unit (needed for the send destination
+    // resolution below).
     auto program_unit =
         data_transfer_op->getParentOfType<mlir::dataflow::ProgramUnitOp>();
     if (!program_unit) {
@@ -580,56 +564,27 @@ struct LowerDataTransferPattern
       return mlir::failure();
     }
 
-    // When splat: verify the load unit declares the splat capability, then
-    // determine the effective load width from the arch's access_granularity
-    // and shuffle to the full destination width.
-    int64_t load_elements = src_total_elements;
-    if (is_splat) {
-      mlir::Attribute load_unit_kind = kindFromProgramUnit(program_unit);
-      auto simd_feature =
-          resource_kinds_.getFeature<mlir::ktdf_arch::feature::SIMD>(
-              load_unit_kind);
-      if (!simd_feature || !simd_feature.canSplat()) {
-        data_transfer_op.emitError(
-            "splat data_transfer requires the load unit to declare "
-            "ktdf_arch.feature.simd = { splat, ... }");
-        return mlir::failure();
-      }
-      load_elements = computeSplatGranularityElements(
-          src_total_elements, vector_type.getElementType(), load_unit_kind,
-          resource_kinds_);
-      if (vector_type.getNumElements() % load_elements != 0) {
-        data_transfer_op.emitError(
-            "dst_total_elements must be divisible by the effective splat "
-            "load width (access granularity-aligned src elements)");
-        return mlir::failure();
-      }
+    // For splat transfers SplatAnnotationPass already widened the last
+    // dimension of src_static_sizes to the arch-aligned load width.
+    int64_t load_elements = 1;
+    for (int64_t s : src_static_sizes) load_elements *= s;
+
+    if (is_splat && vector_type.getNumElements() % load_elements != 0) {
+      data_transfer_op.emitError(
+          "dst_total_elements must be divisible by the effective splat "
+          "load width (access granularity-aligned src elements)");
+      return mlir::failure();
     }
+
     auto load_type = is_splat
                          ? mlir::VectorType::get({load_elements},
                                                  vector_type.getElementType())
                          : vector_type;
 
-    // Build load_set and load_order from the actual number of elements being
-    // loaded.  The source memref always has `num_dims` dimensions, so
-    // load_set/load_order must always be num_dims-dimensional.
-    //
-    // For a non-splat transfer the sizes match src_static_sizes exactly.
-    // For a splat transfer where load_elements > src_total_elements, the
-    // hardware widens the load in the innermost dimension to satisfy the
-    // minimum access granularity.  All outer dimensions remain as-is; only
-    // the innermost dimension size is replaced with load_elements.
-    //
-    // Example: src_static_sizes = [1,1,1,1], load_elements = 4
-    //   → effective_sizes = [1,1,1,4]
-    //   → load_set = affine_set<(d0,d1,d2,d3): d0==0, d1==0, d2==0, d3>=0,
-    //   3-d3>=0>
-    llvm::SmallVector<int64_t> effective_sizes(src_static_sizes);
-    if (is_splat && load_elements != src_total_elements) {
-      effective_sizes.back() = load_elements;
-    }
+    // Build load_set and load_order from src_static_sizes.  For splat
+    // transfers the last dimension was already widened by SplatAnnotationPass.
     mlir::IntegerSet load_set =
-        buildIntegerSetFromSizes(rewriter.getContext(), effective_sizes);
+        buildIntegerSetFromSizes(rewriter.getContext(), src_static_sizes);
     mlir::AffineMap load_order = mlir::AffineMap::getMultiDimIdentityMap(
         num_dims, rewriter.getContext());
 

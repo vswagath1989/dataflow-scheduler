@@ -1,4 +1,4 @@
-// RUN: dataflow-scheduler-opt -pass-pipeline="builtin.module(ktdflowering-to-dfir)" -allow-unregistered-dialect %s | FileCheck %s
+// RUN: dataflow-scheduler-opt -pass-pipeline="builtin.module(splat-annotation,ktdflowering-to-dfir)" -allow-unregistered-dialect %s | FileCheck %s
 
 // Verify hardware-aware splat widening for f32.
 //
