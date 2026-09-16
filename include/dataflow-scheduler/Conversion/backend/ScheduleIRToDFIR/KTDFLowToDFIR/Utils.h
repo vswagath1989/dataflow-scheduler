@@ -21,6 +21,7 @@
 
 #include <optional>
 
+#include "dataflow-scheduler/Conversion/Utils/Utils.h"
 #include "dataflow-scheduler/Conversion/backend/ScheduleIRToDFIR/KTDFLowToDFIR/UnitTypeDiscovery.h"
 #include "dataflow-scheduler/Dialect/Dataflow/Dataflow.h"
 #include "dataflow-scheduler/Dialect/KTDFArch/Analysis/ResourceKinds.h"
@@ -36,6 +37,7 @@
 #include "mlir/IR/Location.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/IR/Types.h"
 #include "mlir/IR/Value.h"
 
 namespace scheduler {
@@ -113,6 +115,15 @@ mlir::Value emitVectorLoad(mlir::OpBuilder& builder, mlir::Location loc,
 /// elements.  The insertion point of `rewriter` must be set by the caller.
 void emitVectorStore(mlir::OpBuilder& builder, mlir::Location loc,
                      mlir::Value value, mlir::Value memref);
+
+/// Create a vectorchain.shuffle that broadcasts `src_vec`
+/// (vector<src_elements x T>) to vector<dst_elements x T> using indices
+/// [0..src_elements-1] with repetition = dst_elements / src_elements.
+/// `src_elements` must be positive and must divide `dst_elements` evenly;
+/// callers are expected to have validated (and diagnosed) that beforehand.
+mlir::Value insertSplatShuffle(mlir::OpBuilder& builder, mlir::Location loc,
+                               mlir::Value src_vec, int64_t src_elements,
+                               int64_t dst_elements);
 
 /// Determine the data transfer type based on source and destination types.
 /// @param src_is_fifo True if source is a FIFO slot, false if memref

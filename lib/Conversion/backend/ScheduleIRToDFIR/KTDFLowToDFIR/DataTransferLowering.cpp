@@ -40,34 +40,6 @@ using namespace scheduler;
 
 namespace {
 
-/// Create a vectorchain.shuffle that broadcasts src_vec (vector<src_elements x
-/// T>) to vector<dst_elements x T> using indices [0..src_elements-1] repeated
-/// (dst_elements / src_elements) times.
-mlir::Value insertSplatShuffle(mlir::PatternRewriter& rewriter,
-                               mlir::Location loc, mlir::Value src_vec,
-                               int64_t src_elements, int64_t dst_elements) {
-  auto src_vec_type = mlir::cast<mlir::VectorType>(src_vec.getType());
-  auto elem_type = src_vec_type.getElementType();
-
-  // Build indices [0, 1, ..., src_elements-1]
-  llvm::SmallVector<mlir::Attribute> index_attrs;
-  for (int64_t i = 0; i < src_elements; ++i) {
-    index_attrs.push_back(rewriter.getIntegerAttr(rewriter.getI32Type(), i));
-  }
-  auto indices_attr = rewriter.getArrayAttr(index_attrs);
-
-  int32_t repetition = static_cast<int32_t>(dst_elements / src_elements);
-  auto result_type = mlir::VectorType::get({dst_elements}, elem_type);
-
-  return mlir::vectorchain::ShuffleOp::create(
-             rewriter, loc, result_type, src_vec,
-             /*variable=*/mlir::ValueRange{}, /*pad=*/mlir::ValueRange{},
-             /*mask=*/nullptr,
-             /*dbgName=*/nullptr, indices_attr,
-             rewriter.getI32IntegerAttr(repetition))
-      .getOutput();
-}
-
 /// One time dimension of one side of a transfer: which memref dimension it
 /// advances, and by how many indices of that dimension per step.
 struct TransferTimeStep {
@@ -366,7 +338,7 @@ struct LowerDataTransferPattern
         return lowerAsLoadAndSend(rewriter, data_transfer_op, src_memref,
                                   src_indices, src_static_sizes, num_dims,
                                   vector_type, src_map, dst_fifo_slot_type,
-                                  is_broadcast_transfer, src_total_elements);
+                                  is_broadcast_transfer);
       }
 
       case DataTransferType::kReceiveAndStore: {
@@ -582,49 +554,52 @@ struct LowerDataTransferPattern
       mlir::ktdf::DataTransferOp data_transfer_op, mlir::Value src_memref,
       mlir::ValueRange src_indices, llvm::ArrayRef<int64_t> src_static_sizes,
       unsigned num_dims, mlir::VectorType vector_type, mlir::AffineMap src_map,
-      mlir::ktdf::FifoSlotType dst_fifo_slot_type, bool is_splat,
-      int64_t src_total_elements) const {
-    // Build load_set from source sizes
-    auto load_set =
-        buildIntegerSetFromSizes(rewriter.getContext(), src_static_sizes);
-
-    // Build load_order
-    auto load_order = mlir::AffineMap::getMultiDimIdentityMap(
-        num_dims, rewriter.getContext());
-
-    // When splat: load only src_total_elements, then shuffle to full width.
-    if (is_splat) {
-      if (vector_type.getNumElements() % src_total_elements != 0) {
-        data_transfer_op.emitError(
-            "dst_total_elements must be divisible by src_total_elements "
-            "for splat transfer");
-        return mlir::failure();
-      }
+      mlir::ktdf::FifoSlotType dst_fifo_slot_type, bool is_splat) const {
+    // Find the enclosing program_unit (needed for the send destination
+    // resolution below).
+    auto program_unit =
+        data_transfer_op->getParentOfType<mlir::dataflow::ProgramUnitOp>();
+    if (!program_unit) {
+      data_transfer_op.emitError("data_transfer must be inside a program_unit");
+      return mlir::failure();
     }
+
+    // For splat transfers SplatAnnotationPass already widened the last
+    // dimension of src_static_sizes to the arch-aligned load width.
+    int64_t load_elements = 1;
+    for (int64_t s : src_static_sizes) load_elements *= s;
+
+    if (is_splat && vector_type.getNumElements() % load_elements != 0) {
+      data_transfer_op.emitError(
+          "dst_total_elements must be divisible by the effective splat "
+          "load width (access granularity-aligned src elements)");
+      return mlir::failure();
+    }
+
     auto load_type = is_splat
-                         ? mlir::VectorType::get({src_total_elements},
+                         ? mlir::VectorType::get({load_elements},
                                                  vector_type.getElementType())
                          : vector_type;
+
+    // Build load_set and load_order from src_static_sizes.  For splat
+    // transfers the last dimension was already widened by SplatAnnotationPass.
+    mlir::IntegerSet load_set =
+        buildIntegerSetFromSizes(rewriter.getContext(), src_static_sizes);
+    mlir::AffineMap load_order = mlir::AffineMap::getMultiDimIdentityMap(
+        num_dims, rewriter.getContext());
 
     // Create vector_load operation
     auto vector_load_op = mlir::agen::VectorLoadOp::create(
         rewriter, data_transfer_op.getLoc(), load_type, src_memref,
         /*dbgName=*/nullptr, src_map, src_indices, load_set, load_order);
 
-    // For splat: broadcast loaded vector to full destination width.
+    // For splat: broadcast the granularity-sized load to full destination
+    // width.
     mlir::Value send_value = vector_load_op.getResult();
     if (is_splat) {
-      send_value =
-          insertSplatShuffle(rewriter, data_transfer_op.getLoc(), send_value,
-                             src_total_elements, vector_type.getNumElements());
-    }
-
-    // Find the enclosing program_unit
-    auto program_unit =
-        data_transfer_op->getParentOfType<mlir::dataflow::ProgramUnitOp>();
-    if (!program_unit) {
-      data_transfer_op.emitError("data_transfer must be inside a program_unit");
-      return mlir::failure();
+      send_value = scheduler::insertSplatShuffle(
+          rewriter, data_transfer_op.getLoc(), send_value, load_elements,
+          vector_type.getNumElements());
     }
 
     // Resolve the destination unit from the FIFO dest attribute

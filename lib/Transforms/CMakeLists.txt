@@ -17,6 +17,7 @@ add_dataflow_scheduler_library(DataflowSchedulerTransforms
     ParallelizeLoopsAcrossInstances.cpp
     PathExpansion.cpp
     ScalarBroadcastLegalization.cpp
+    SplatAnnotationPass.cpp
     StripMineSCFForLoops.cpp
     TileSCFForLoops.cpp
 
@@ -33,7 +34,9 @@ add_dataflow_scheduler_library(DataflowSchedulerTransforms
     KTIR::KtdpDialect
     DataflowScheduler::Analysis
     DataflowScheduler::ArchViews
+    DataflowScheduler::ConversionUtils
     DataflowScheduler::KTDFAnalysis
+    DataflowScheduler::KTDFLoweringDialect
     DataflowSchedulerDialects::KTDFDialect
     DataflowSchedulerDialects::KTDFArchAnalysis
     DataflowSchedulerDialects::KTDFArchTransforms

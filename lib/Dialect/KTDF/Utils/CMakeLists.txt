@@ -12,4 +12,8 @@ add_dataflow_scheduler_library(DataflowSchedulerKTDFUtils
     DataflowSchedulerDialects::DataflowDialect
     DataflowSchedulerDialects::KTDFDialect
     DataflowSchedulerDialects::UniformDialect
+
+  LINK_MLIR_LIBS
+    MLIRLinalgDialect
+    MLIRMemRefDialect
 )

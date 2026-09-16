@@ -20,6 +20,7 @@
 
 #include <mlir/IR/BuiltinTypeInterfaces.h>
 
+#include "dataflow-scheduler/Conversion/Utils/Utils.h"
 #include "dataflow-scheduler/Dialect/Agen/Agen.h"
 #include "dataflow-scheduler/Dialect/Dataflow/Dataflow.h"
 #include "dataflow-scheduler/Dialect/Dataflow/Utils.h"
@@ -28,6 +29,7 @@
 #include "dataflow-scheduler/Dialect/KTDFArch/KTDFArch.h"
 #include "dataflow-scheduler/Dialect/KTDFArch/KTDFArchIntrinsics.h"
 #include "dataflow-scheduler/Dialect/Uniform/Uniform.h"
+#include "dataflow-scheduler/Dialect/VectorChain/VectorChain.h"
 #include "dataflow-scheduler/Utils/SchedulerExtContext.h"
 #include "ktir/Dialect/KTDP/KTDP.h"
 #include "llvm/ADT/SmallVector.h"
@@ -45,19 +47,7 @@ std::optional<scheduler::ResourceType>
 scheduler::getEnclosingProgramUnitResourceType(mlir::Operation* op) {
   auto pu = op->getParentOfType<mlir::dataflow::ProgramUnitOp>();
   if (!pu || pu.getUnits().empty()) return std::nullopt;
-
-  mlir::Value first_unit = pu.getUnits().front();
-
-  // Direct dataflow.get_unit operand (already-lowered program_unit).
-  if (auto get_unit = mlir::dyn_cast_or_null<mlir::dataflow::GetUnitOp>(
-          first_unit.getDefiningOp())) {
-    auto type_attr = get_unit->getAttrOfType<mlir::StringAttr>("type");
-    if (type_attr)
-      return mlir::StringAttr::get(op->getContext(),
-                                   type_attr.getValue().upper());
-  }
-
-  return std::nullopt;
+  return scheduler::getUnitResourceType(pu.getUnits().front());
 }
 
 int64_t scheduler::getVectorLanes(mlir::Type elem_type,
@@ -312,4 +302,32 @@ llvm::FailureOr<scheduler::DataTransferType> scheduler::getDataTransferType(
 
   // Both source and destination are FIFO slots - unsupported
   return llvm::failure();
+}
+
+mlir::Value scheduler::insertSplatShuffle(mlir::OpBuilder& builder,
+                                          mlir::Location loc,
+                                          mlir::Value src_vec,
+                                          int64_t src_elements,
+                                          int64_t dst_elements) {
+  assert(src_elements > 0 && "splat source width must be positive");
+  assert(dst_elements % src_elements == 0 &&
+         "splat destination width must be a multiple of the source width");
+
+  auto src_vec_type = mlir::cast<mlir::VectorType>(src_vec.getType());
+  auto elem_type = src_vec_type.getElementType();
+
+  llvm::SmallVector<mlir::Attribute> index_attrs;
+  for (int64_t i = 0; i < src_elements; ++i) {
+    index_attrs.push_back(builder.getIntegerAttr(builder.getI32Type(), i));
+  }
+  auto indices_attr = builder.getArrayAttr(index_attrs);
+  int32_t repetition = static_cast<int32_t>(dst_elements / src_elements);
+  auto result_type = mlir::VectorType::get({dst_elements}, elem_type);
+
+  return mlir::vectorchain::ShuffleOp::create(
+             builder, loc, result_type, src_vec,
+             /*variable=*/mlir::ValueRange{}, /*pad=*/mlir::ValueRange{},
+             /*mask=*/nullptr, /*dbgName=*/nullptr, indices_attr,
+             builder.getI32IntegerAttr(repetition))
+      .getOutput();
 }
