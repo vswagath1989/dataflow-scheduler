@@ -85,6 +85,7 @@
 #include "dataflow-scheduler/Analysis/ArchViews/GroupLocalMemory.h"
 #include "dataflow-scheduler/Dialect/KTDF/KTDF.h"
 #include "dataflow-scheduler/Dialect/KTDF/Transforms/Passes.h"
+#include "dataflow-scheduler/Dialect/KTDF/Utils/Utils.h"
 #include "dataflow-scheduler/Dialect/KTDFArch/Analysis/DeviceManager.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/Support/DebugLog.h"
@@ -277,15 +278,9 @@ static LogicalResult lowerIterArgInitializer(Value init_val, Value alloc_val,
 
   // ── Case: ktdf.read_from_fifo returning a tensor ──────────────────────────
   if (auto read_op = dyn_cast<ktdf::ReadFromFifoOp>(defining_op)) {
-    auto tensor_type = cast<RankedTensorType>(read_op.getResult().getType());
-    auto memref_type =
-        MemRefType::get(tensor_type.getShape(), tensor_type.getElementType());
     OpBuilder builder(read_op);
-    Location loc = read_op.getLoc();
-    Value new_read = ktdf::ReadFromFifoOp::create(builder, loc, memref_type,
-                                                  read_op.getFifoSlot())
-                         .getResult();
-    memref::CopyOp::create(builder, loc, new_read, alloc_val);
+    Value new_read = ktdf::tensorReadFromFifoToMemref(builder, read_op);
+    memref::CopyOp::create(builder, read_op.getLoc(), new_read, alloc_val);
     read_op->erase();
     return success();
   }
@@ -427,29 +422,6 @@ static void removeUnusedIterArgChain(ArrayRef<BlockArgument> acc_iter_args,
 }
 
 // ---------------------------------------------------------------------------
-// Emit a new ktdf.read_from_fifo with a memref result type that mirrors the
-// tensor-typed input at position 0 of `generic_op`.
-//
-// Asserts that `generic_op` has exactly one input and that the input is
-// defined by a ktdf.read_from_fifo — no other producer is supported.
-// ---------------------------------------------------------------------------
-static Value convertInputToMemref(OpBuilder& builder,
-                                  linalg::GenericOp generic_op) {
-  assert(generic_op.getInputs().size() == 1 &&
-         "convertInputToMemref: expected exactly one input on linalg.generic");
-  Value input = generic_op.getInputs()[0];
-  auto orig_read = input.getDefiningOp<ktdf::ReadFromFifoOp>();
-  assert(orig_read &&
-         "convertInputToMemref: input[0] must be a ktdf.read_from_fifo");
-
-  auto in_tensor_type = cast<RankedTensorType>(input.getType());
-  auto in_memref_type = MemRefType::get(in_tensor_type.getShape(),
-                                        in_tensor_type.getElementType());
-  return ktdf::ReadFromFifoOp::create(builder, generic_op.getLoc(),
-                                      in_memref_type, orig_read.getFifoSlot())
-      .getResult();
-}
-
 // ---------------------------------------------------------------------------
 // Lower a single reduction linalg.generic to buffer semantics.
 // `generic_op` must have at least one reduction iterator and its input must
@@ -531,22 +503,14 @@ static LogicalResult rewriteGeneric(
   // Step 5: emit a new ktdf.read_from_fifo with a memref result type so the
   // buffer-semantics linalg.generic below has a pure-buffer input.
   builder.setInsertionPoint(generic_op);
-  Value new_read = convertInputToMemref(builder, generic_op);
+  auto orig_read =
+      generic_op.getInputs()[0].getDefiningOp<ktdf::ReadFromFifoOp>();
+  assert(orig_read && "rewriteGeneric: input[0] must be a ktdf.read_from_fifo");
+  Value new_read = ktdf::tensorReadFromFifoToMemref(builder, orig_read);
 
   // Step 6: pure-buffer linalg.generic — memref ins + memref outs, no result.
-  auto buf_generic = linalg::GenericOp::create(
-      builder, loc,
-      /*resultTensorTypes=*/TypeRange{},
-      /*inputs=*/ValueRange{new_read},
-      /*outputs=*/allocs, generic_op.getIndexingMapsAttr(),
-      generic_op.getIteratorTypesAttr(),
-      /*doc=*/StringAttr{},
-      /*library_call=*/StringAttr{});
-  IRMapping mapping;
-  generic_op.getRegion().cloneInto(&buf_generic.getRegion(), mapping);
-  // cloneInto prepends an empty placeholder block; drop it, keep the clone.
-  Block& placeholder = buf_generic.getRegion().front();
-  if (&placeholder != &buf_generic.getRegion().back()) placeholder.erase();
+  ktdf::cloneLinalgGenericAsBufferOp(
+      builder, generic_op, /*inputs=*/ValueRange{new_read}, /*outputs=*/allocs);
 
   // Step 7: replace generic result with alloc, patch write_to_fifo users,
   // then erase the generic and its now-dead tensor read_from_fifo input.
@@ -795,18 +759,8 @@ static LogicalResult rewriteInnerDimGeneric(
   // subview of each. In Case A those are the outer-dim accumulators; in Case B
   // they are the local registers copied from the fifo. Original maps and
   // iterator_types are preserved.
-  auto buf_generic = linalg::GenericOp::create(
-      builder, loc,
-      /*resultTensorTypes=*/TypeRange{},
-      /*inputs=*/effective,
-      /*outputs=*/subviews, generic_op.getIndexingMapsAttr(),
-      generic_op.getIteratorTypesAttr(),
-      /*doc=*/StringAttr{},
-      /*library_call=*/StringAttr{});
-  IRMapping mapping;
-  generic_op.getRegion().cloneInto(&buf_generic.getRegion(), mapping);
-  Block& placeholder = buf_generic.getRegion().front();
-  if (&placeholder != &buf_generic.getRegion().back()) placeholder.erase();
+  ktdf::cloneLinalgGenericAsBufferOp(builder, generic_op, /*inputs=*/effective,
+                                     /*outputs=*/subviews);
 
   // Patch each write_to_fifo to send the whole buffer its result reduced into
   // rather than the subview, and capture the slot it wrote to, whose type is
@@ -905,10 +859,11 @@ struct MapReductionPartialsPass
       // on its pipeline).  Emit a memref-typed read in its place so that
       // rewriteInnerDimGeneric can assume ins[0] is already a memref.
       Operation* stale_tensor_read = nullptr;
-      if (generic_op.getInputs()[0].getDefiningOp<ktdf::ReadFromFifoOp>()) {
+      if (auto read_op =
+              generic_op.getInputs()[0].getDefiningOp<ktdf::ReadFromFifoOp>()) {
         OpBuilder builder(generic_op);
-        stale_tensor_read = generic_op.getInputs()[0].getDefiningOp();
-        Value new_read = convertInputToMemref(builder, generic_op);
+        stale_tensor_read = read_op;
+        Value new_read = ktdf::tensorReadFromFifoToMemref(builder, read_op);
         generic_op.getInputsMutable().assign(new_read);
       }
       // Transform inner-dim generic into memref-typed generic.
