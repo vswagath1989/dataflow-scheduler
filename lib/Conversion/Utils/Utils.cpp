@@ -99,7 +99,7 @@ std::optional<int64_t> fittingGranularityElements(
 }  // namespace
 
 int64_t computeSplatGranularityElements(
-    int64_t src_total_elements, mlir::Type elem_type, mlir::Attribute kind,
+    int64_t src_total_elements, mlir::Type elem_type, ResourceType kind,
     const mlir::ktdf_arch::ResourceKinds& resource_kinds) {
   if (!kind) return src_total_elements;
 

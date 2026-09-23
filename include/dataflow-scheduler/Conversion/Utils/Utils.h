@@ -63,7 +63,7 @@ std::string getUnitTypeFromQueryMap(mlir::Value query_map);
 /// Falls back to `src_total_elements` -- i.e. no widening -- when no space
 /// yields a fitting granularity.
 int64_t computeSplatGranularityElements(
-    int64_t src_total_elements, mlir::Type elem_type, mlir::Attribute kind,
+    int64_t src_total_elements, mlir::Type elem_type, ResourceType kind,
     const mlir::ktdf_arch::ResourceKinds& resource_kinds);
 
 /// Build an IntegerSet from a size array: each size-1 entry becomes an equality

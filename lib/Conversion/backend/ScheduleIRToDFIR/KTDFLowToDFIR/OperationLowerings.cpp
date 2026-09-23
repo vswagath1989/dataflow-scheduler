@@ -69,8 +69,11 @@ namespace {
 struct LowerReadFromFifoPattern
     : public mlir::OpRewritePattern<mlir::ktdf::ReadFromFifoOp> {
   LowerReadFromFifoPattern(mlir::MLIRContext* context,
+                           const mlir::ktdf_arch::ResourceKinds& resource_kinds,
                            const ResourceToUnits& components)
-      : OpRewritePattern(context), components_(components) {}
+      : OpRewritePattern(context),
+        resource_kinds_(resource_kinds),
+        components_(components) {}
 
   mlir::LogicalResult matchAndRewrite(
       mlir::ktdf::ReadFromFifoOp read_op,
@@ -114,6 +117,14 @@ struct LowerReadFromFifoPattern
     // names before anything may consume it.
     mlir::Value received = receive_op.getData();
     if (read_op.getSplat()) {
+      // FIXME: Discover compute from op.
+      auto compute = resource_kinds_.getDefaultCompute();
+      if (!compute) {
+        read_op.emitError(
+            "a sub-SIMD splat needs the device to declare a default compute "
+            "unit to read the sub-SIMD group width off");
+        return mlir::failure();
+      }
       auto splatted = emitSplatMode(rewriter, read_op, *read_op.getSplat(),
                                     received, compute);
       if (mlir::failed(splatted)) {
@@ -162,7 +173,7 @@ struct LowerReadFromFifoPattern
     llvm_unreachable("unhandled ktdf::SplatMode");
   }
 
-  mlir::ktdf_arch::ResourceKinds& resource_kinds_;
+  const mlir::ktdf_arch::ResourceKinds& resource_kinds_;
   const ResourceToUnits& components_;
 };
 
@@ -912,7 +923,8 @@ mlir::LogicalResult scheduler::runOperationLowerings(
   mlir::RewritePatternSet patterns(func.getContext());
   populateLinalgLoweringPatterns(patterns, symbols);
   patterns.add<LowerMemRefCopyFromFifoPattern>(func.getContext());
-  patterns.add<LowerReadFromFifoPattern>(func.getContext(), components);
+  patterns.add<LowerReadFromFifoPattern>(func.getContext(), mapping.byKind(),
+                                         components);
   patterns.add<LowerWriteToFifoPattern>(func.getContext(), components);
   populateDataTransferLoweringPatterns(patterns, components);
   patterns.add<LowerSignalPattern>(func.getContext(), scheduler_ctx,

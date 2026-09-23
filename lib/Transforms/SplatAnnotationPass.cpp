@@ -65,19 +65,19 @@ namespace {
 /// ktdf.stage (pre-KTDFToKTDFLow IR) or a ktdf_lowering.execute_on
 /// (post-KTDFToKTDFLow / direct test IR).  Returns nullptr when the kind is
 /// ambiguous or cannot be resolved.
-mlir::Attribute resolveLoadUnitKind(mlir::Operation* op) {
+scheduler::ResourceType resolveLoadUnitKind(mlir::Operation* op) {
   // Pre-lowering: inside a ktdf.stage with applicable_units.
   if (auto stage = op->getParentOfType<mlir::ktdf::StageOp>()) {
     auto units = stage.getApplicableUnits();
     if (!units || units->size() != 1) return nullptr;
-    return units->getValue().front();
+    return mlir::dyn_cast<scheduler::ResourceType>(units->getValue().front());
   }
 
   // Post-lowering: inside a ktdf_lowering.execute_on with unit operands.
   auto exec = op->getParentOfType<mlir::ktdf_lowering::ExecuteOnOp>();
   if (!exec || exec.getUnits().empty()) return nullptr;
   return scheduler::getUnitResourceType(exec.getUnits().front())
-      .value_or(mlir::Attribute{});
+      .value_or(scheduler::ResourceType{});
 }
 
 /// Widen `transfer`'s load to the arch's access granularity and name, on every
@@ -87,7 +87,7 @@ mlir::Attribute resolveLoadUnitKind(mlir::Operation* op) {
 mlir::LogicalResult annotateSplatTransfer(
     mlir::ktdf::DataTransferOp transfer,
     const mlir::ktdf_arch::ResourceKinds& resource_kinds) {
-  mlir::Attribute load_unit_kind = resolveLoadUnitKind(transfer);
+  scheduler::ResourceType load_unit_kind = resolveLoadUnitKind(transfer);
 
   auto simd_feature =
       resource_kinds.getFeature<mlir::ktdf_arch::feature::SIMD>(load_unit_kind);
