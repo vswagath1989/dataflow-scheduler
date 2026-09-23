@@ -1,0 +1,98 @@
+// RUN: dataflow-scheduler-opt -pass-pipeline="builtin.module(splat-annotation,ktdflowering-to-dfir)" -allow-unregistered-dialect %s | FileCheck %s
+
+// Verify hardware-aware splat widening for f32 on the send side.
+//
+// Send side — load-unit load granularity (access_granularity-aligned):
+//   word_size=1 (byte), access granularities [64, 8, 2] words for "L1".
+//   For f32 (4 bytes/elem): elem_words=4, min_words=4, fitAccess(4)→8 words
+//   load_elements = 8 / 4 = 2   repetition = 64 / 2 = 32
+//   agen.vector_load vector<2xf32>
+//   vectorchain.shuffle indices=[0,1] rep=32 → vector<64xf32>
+//
+//   When the source memref is multi-dimensional (e.g. memref<?x1x1x32xf32>
+//   with src_static_sizes=[1,1,1,1]), widening replaces only the innermost
+//   dimension: effective_sizes=[1,1,1,4], producing a 4D load_set that keeps
+//   all outer dims equality-constrained (d0==0, d1==0, d2==0) and gives the
+//   inner dim a range (d3>=0, -d3+3>=0).  The 1D source in this test
+//   (src_static_sizes=[1]) yields effective_sizes=[2] with the same logic.
+//
+// Receive side — the shuffle the splat mode names.  A widened load leaves one
+// live element per sub-SIMD group, so the read SplatAnnotationPass marked lowers
+// to the receive plus a shuffle spreading the first lane of each group across
+// it.  The group width is the compute unit's sub_simd_lanes, which sample_device
+// declares as 8 for f32, so eight zero indices repeat eight times over the 64
+// lanes.
+//
+// Where the buffer that shuffle feeds lives is still the device's to say, in
+// patterns ["post_scheduling"], which are not in this pipeline.
+
+// CHECK-DAG: #[[MAP:.+]] = affine_map<(d0) -> (d0)>
+// CHECK-DAG: #[[SET:.+]] = affine_set<(d0) : (d0 >= 0, -d0 + 1 >= 0)>
+
+// CHECK-LABEL: func.func @splat_granularity_f32
+// CHECK:         %[[C0:.+]] = arith.constant 0 : index
+// CHECK:         %[[U0:.+]] = dataflow.get_unit {core = 0 : i32, name = "C0-L1LU", type = "L1LU"} : index
+// CHECK:         %[[U1:.+]] = dataflow.get_unit {core = 1 : i32, name = "C1-L1LU", type = "L1LU"} : index
+// CHECK:         %[[V0:.+]] = dataflow.get_unit {core = 0 : i32, name = "C0-SFU", type = "SFU"} : index
+// CHECK:         %[[V1:.+]] = dataflow.get_unit {core = 1 : i32, name = "C1-SFU", type = "SFU"} : index
+// --- load-unit program_unit: the widened load and the send-side shuffle ---
+// CHECK:       dataflow.program_unit iter_arg : %[[ITER_L:.+]] -> (%[[U0]], %[[U1]]) :
+// CHECK:         %[[ALLOC:.+]] = memref.alloc() : memref<256xf32, "L1">
+// CHECK:         scf.for
+// CHECK:           %[[LOAD:.+]] = agen.vector_load %[[ALLOC]][%[[C0]]]
+// CHECK-SAME:        {load_order = #[[MAP]], load_set = #[[SET]]} : memref<256xf32, "L1">, vector<2xf32>
+// CHECK-NEXT:      %[[SEND_SHUF:.+]] = vectorchain.shuffle input(%[[LOAD]]) {indices = [0 : i32, 1 : i32], repetition = 32 : i32} : vector<2xf32>, vector<64xf32>
+// CHECK-NEXT:      %{{.*}} = uniform.def_immutable_mapping
+// CHECK-NEXT:      %{{.*}} = uniform.query_map
+// CHECK-NEXT:      dataflow.send %{{.*}}, %[[SEND_SHUF]] : vector<64xf32>
+// --- compute-unit program_unit: the receive and the sub-SIMD shuffle ---
+// CHECK:       dataflow.program_unit iter_arg : %[[ITER_C:.+]] -> (%[[V0]], %[[V1]]) :
+// CHECK:         scf.for
+// CHECK:           %{{.*}} = uniform.def_immutable_mapping
+// CHECK-NEXT:      %[[SRC:.+]] = uniform.query_map
+// CHECK-NEXT:      %[[RECV:.+]] = dataflow.receive %[[SRC]] : vector<64xf32>
+// CHECK-NEXT:      %[[RESULT:.+]] = vectorchain.shuffle input(%[[RECV]])
+// CHECK-SAME:        {indices = [0 : i32, 0 : i32, 0 : i32, 0 : i32, 0 : i32, 0 : i32, 0 : i32, 0 : i32], repetition = 8 : i32} : vector<64xf32>, vector<64xf32>
+// CHECK-NEXT:      "test.use"(%[[RESULT]])
+// No register round trip: nothing here materializes a buffer for the splat.
+// CHECK-NOT:     memref.alloc
+
+module {
+  ktdf_arch.device @sample_device attributes {} import("../../../../Dialect/KTDFArch/sample_device.mlir")
+  func.func @splat_granularity_f32() attributes {grid = [2]} {
+    %0 = dataflow.get_unit {core = 0 : i32, name = "C0-L1LU", type = "L1LU"} : index
+    %1 = dataflow.get_unit {core = 1 : i32, name = "C1-L1LU", type = "L1LU"} : index
+    %2 = dataflow.get_unit {core = 0 : i32, name = "C0-SFU", type = "SFU"} : index
+    %3 = dataflow.get_unit {core = 1 : i32, name = "C1-SFU", type = "SFU"} : index
+    %tile_id = ktdp.get_compute_tile_id : index
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c12 = arith.constant 12 : index
+    %map_l1lu = uniform.def_immutable_mapping([%c0 -> %0], [%c1 -> %1]):index
+    %u_l1lu = uniform.query_map(map:%map_l1lu, key:%tile_id) : index
+    %map_sfu  = uniform.def_immutable_mapping([%c0 -> %2], [%c1 -> %3]):index
+    %u_sfu  = uniform.query_map(map:%map_sfu,  key:%tile_id) : index
+    ktdf_lowering.execute_on %u_l1lu, %u_sfu {
+      %alloc = memref.alloc() : memref<256xf32, "L1">
+      %fifo:1 = ktdf.fifo.allocate() -> !ktdf.fifo.slot<"L1LU" -> "SFU", 64xf32>
+      ktdf_lowering.execute_on %u_l1lu {
+        scf.for %i = %c0 to %c12 step %c1 {
+          // Source size [1], dest size [64]: splat 1 f32 element to 64.
+          // With word_size=1 and fitAccess(4)=8 words → loads 2 elements,
+          // shuffle rep=32 instead of loading 1 element and rep=64.
+          ktdf.data_transfer from %alloc[%c0] size [1]
+                             to %fifo#0 size [64]
+                             {transfer_mode = "splat"}
+              : memref<256xf32, "L1">, !ktdf.fifo.slot<"L1LU" -> "SFU", 64xf32>
+        } {loop_type = #ktdf.loop_type<parallel_loop>}
+      }
+      ktdf_lowering.execute_on %u_sfu {
+        scf.for %i = %c0 to %c12 step %c1 {
+          %result = ktdf.read_from_fifo %fifo#0 : <"L1LU" -> "SFU", 64xf32> -> tensor<1x64xf32>
+          "test.use"(%result) : (tensor<1x64xf32>) -> ()
+        } {loop_type = #ktdf.loop_type<parallel_loop>}
+      }
+    }
+    return
+  }
+}

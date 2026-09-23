@@ -8,7 +8,13 @@ add_dataflow_scheduler_library(DataflowSchedulerConversionUtils
   EXPORT_NAME ConversionUtils
 
   LINK_LIBS PUBLIC
+    DataflowSchedulerDialects::AgenDialect
     DataflowSchedulerDialects::DataflowDialect
     DataflowSchedulerDialects::KTDFDialect
+    DataflowSchedulerDialects::KTDFArchAnalysis
     DataflowSchedulerDialects::UniformDialect
+    DataflowSchedulerDialects::VectorChainDialect
+
+  LINK_MLIR_LIBS
+    MLIRArithDialect
 )

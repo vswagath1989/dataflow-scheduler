@@ -37,6 +37,7 @@
 // CHECK-NEXT:   path-expansion
 // CHECK-NEXT:   indirect-addr-buf-fill-legalization
 // CHECK-NEXT:   scalar-broadcast-legalization
+// CHECK-NEXT:   splat-annotation
 // CHECK-NEXT:   normalize-scf-for-loops
 // CHECK-NEXT:   canonicalize
 // CHECK-NEXT:   tile-scf-for-loops
@@ -65,6 +66,7 @@
 // CHECK-NEXT:   apply-device-patterns{groups={post_scheduling}}
 // CHECK-NEXT:   )
 // CHECK-NEXT:   )
+// CHECK-NEXT:   custom-scheduler-bufferization
 // CHECK-NEXT:   address-assignment
 // CHECK-NEXT:   normalize-grid-to-1d
 // CHECK-NEXT:   ktdf-to-ktdflowering

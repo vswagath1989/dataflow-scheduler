@@ -31,6 +31,7 @@
 #include <mlir/Dialect/Affine/IR/ValueBoundsOpInterfaceImpl.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/Arith/IR/ValueBoundsOpInterfaceImpl.h>
+#include <mlir/Dialect/Bufferization/IR/Bufferization.h>
 #include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/Dialect/Linalg/IR/Linalg.h>
 #include <mlir/Dialect/Math/IR/Math.h>
@@ -129,6 +130,7 @@ void scheduler::registerAllDialects(mlir::DialectRegistry& registry) {
   // Register the dialects required from MLIR.
   registry.insert<mlir::affine::AffineDialect,
                   mlir::arith::ArithDialect,
+                  mlir::bufferization::BufferizationDialect,
                   mlir::func::FuncDialect,
                   mlir::linalg::LinalgDialect,
                   mlir::math::MathDialect,

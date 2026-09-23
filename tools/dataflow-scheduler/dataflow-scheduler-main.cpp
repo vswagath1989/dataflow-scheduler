@@ -24,6 +24,7 @@
 
 #include <filesystem>
 
+#include "dataflow-scheduler/Dialect/KTDF/KTDFDialect.h"
 #include "dataflow-scheduler/Dialect/KTDFArch/KTDFArch.h"
 #include "dataflow-scheduler/Dialect/KTDFArch/KTDFArchDialect.h"
 #include "ktir/Dialect/KTDP/KTDPDialect.h"
@@ -94,6 +95,9 @@ auto getDeviceName(const std::filesystem::path& path) -> StringRef {
   // Device specs may reference #ktdp.memory_space<...> in memory `kind`
   // attributes, so the ktdp dialect must be available when parsing the file.
   registry.insert<mlir::ktdp::KtdpDialect>();
+  // A device's patterns may match an attribute the scheduler's own ops carry,
+  // such as #ktdf.splat<...>, which is only an attribute here if ktdf is too.
+  registry.insert<ktdf::KTDFDialect>();
   MLIRContext context(registry);
 
   std::string error_message;

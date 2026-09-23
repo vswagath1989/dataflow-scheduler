@@ -19,6 +19,7 @@
 #include <llvm/Support/CommandLine.h>
 #include <llvm/Support/DebugLog.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
+#include <mlir/Dialect/Bufferization/IR/Bufferization.h>
 #include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/Dialect/Linalg/IR/Linalg.h>
 #include <mlir/Dialect/Math/IR/Math.h>
@@ -33,11 +34,16 @@
 #include <mlir/Support/TypeID.h>
 #include <mlir/Transforms/GreedyPatternRewriteDriver.h>
 
+#include "dataflow-scheduler/Conversion/Utils/Utils.h"
 #include "dataflow-scheduler/Dialect/Agen/Agen.h"  // IWYU pragma: keep
+#include "dataflow-scheduler/Dialect/KTDF/KTDF.h"  // IWYU pragma: keep
+#include "dataflow-scheduler/Dialect/KTDF/Utils/Utils.h"
 #include "dataflow-scheduler/Dialect/KTDFArch/KTDFArchDialect.h"  // IWYU pragma: keep
 #include "dataflow-scheduler/Dialect/KTDFArch/Transforms/ApplyPatterns.h"
 #include "dataflow-scheduler/Dialect/VectorChain/VectorChain.h"  // IWYU pragma: keep
 #include "dataflow-scheduler/Transforms/Passes.h"
+#include "ktir/Dialect/KTDP/KTDPDialect.h"        // IWYU pragma: keep
+#include "ktir/Dialect/SpyreOp/SpyreOpDialect.h"  // IWYU pragma: keep
 
 #define PASS_NAME "apply-device-patterns"
 #define DEBUG_TYPE PASS_NAME
@@ -203,6 +209,76 @@ auto ktdfIsReductionKind(mlir::PatternRewriter& /*rewriter*/,
   return mlir::success();
 }
 
+// Constraint: ktdf.is_tensor_type(type)
+//
+// Expected `values` entries, one of them:
+//   [0] mlir::Type — the type to inspect
+//
+// Succeeds when `type` is a ranked tensor. A pattern that rebuilds a
+// tensor-producing op on buffers needs this to terminate: its own output
+// matches everything the input did apart from being a buffer.
+auto ktdfIsTensorType(mlir::PatternRewriter& /*rewriter*/,
+                      mlir::PDLResultList& /*results*/,
+                      llvm::ArrayRef<mlir::PDLValue> values)
+    -> mlir::LogicalResult {
+  assert(values.size() == 1);
+  return mlir::success(
+      llvm::isa<mlir::RankedTensorType>(values[0].cast<mlir::Type>()));
+}
+
+// Rewrite helper: ktdf.memref_read_from_fifo(read) → Value
+//
+// Expected `values` entries, one of them:
+//   [0] mlir::Operation* — a tensor-typed ktdf.read_from_fifo
+//
+// Re-reads the same slot as a plain buffer, shaped like the tensor the original
+// produced, and returns that buffer. Whatever the read carries that a buffer
+// still owes -- a splat mode, say -- comes along.
+//
+// A pattern cannot build this op itself: PDL puts every attribute it is given
+// into the op's discardable dictionary (see ByteCodeExecutor's
+// CreateOperation), so an attribute the op declares as its own would land
+// beside its real slot rather than in it, where no accessor would find it.
+//
+// The op lands at the rewriter's insertion point, which the pattern applicator
+// has set to the matched op.
+auto ktdfMemRefReadFromFifo(mlir::PatternRewriter& rewriter,
+                            mlir::PDLResultList& results,
+                            llvm::ArrayRef<mlir::PDLValue> values)
+    -> mlir::LogicalResult {
+  assert(values.size() == 1);
+  auto read = llvm::dyn_cast_if_present<mlir::ktdf::ReadFromFifoOp>(
+      values[0].cast<mlir::Operation*>());
+  if (!read || !llvm::isa<mlir::RankedTensorType>(read.getResult().getType())) {
+    return mlir::failure();
+  }
+
+  results.push_back(mlir::ktdf::tensorReadFromFifoToMemref(rewriter, read));
+  return mlir::success();
+}
+
+// Rewrite helper: ktdf.memref_type_in_space(type, space) → Type
+//
+// Expected `values` entries, two of them in this order:
+//   [0] mlir::Type      — the shaped type to take the shape and element type
+//                         from
+//   [1] mlir::Attribute — the memory space the result carries
+//
+// The same thing as ktdf.memref_type, for a buffer a device wants in a memory
+// it names -- a register file, say. Naming the memory here is what lets address
+// assignment place the buffer.
+auto ktdfMemRefTypeInSpace(mlir::PatternRewriter& /*rewriter*/,
+                           mlir::PDLResultList& results,
+                           llvm::ArrayRef<mlir::PDLValue> values)
+    -> mlir::LogicalResult {
+  assert(values.size() == 2);
+  mlir::MemRefType memref = memRefTypeFor(values[0].cast<mlir::Type>(),
+                                          values[1].cast<mlir::Attribute>());
+  if (!memref) return mlir::failure();
+  results.push_back(memref);
+  return mlir::success();
+}
+
 class PatternCache : public mlir::ktdf_arch::PatternCache {
  public:
   using mlir::ktdf_arch::PatternCache::PatternCache;
@@ -214,6 +290,12 @@ class PatternCache : public mlir::ktdf_arch::PatternCache {
                                         ktdfIsInnerDimReduction);
     patterns.registerConstraintFunction("ktdf.is_reduction_kind",
                                         ktdfIsReductionKind);
+    patterns.registerConstraintFunction("ktdf.is_tensor_type",
+                                        ktdfIsTensorType);
+    patterns.registerRewriteFunction("ktdf.memref_read_from_fifo",
+                                     ktdfMemRefReadFromFifo);
+    patterns.registerRewriteFunction("ktdf.memref_type_in_space",
+                                     ktdfMemRefTypeInSpace);
     patterns.registerRewriteFunction("ktdf.subview_source", ktdfSubviewSource);
     patterns.registerRewriteFunction("ktdf.with_precision", ktdfWithPrecision);
   }

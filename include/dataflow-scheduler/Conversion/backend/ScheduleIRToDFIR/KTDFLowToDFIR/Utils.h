@@ -32,10 +32,10 @@
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
-#include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/Location.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/IR/Types.h"
 #include "mlir/IR/Value.h"
 
 namespace scheduler {
@@ -89,22 +89,6 @@ llvm::FailureOr<mlir::Value> resolveUnitFromFifoAttr(
     mlir::Attribute fifo_attr, const ResourceToUnits& components,
     mlir::PatternRewriter& rewriter, mlir::dataflow::ProgramUnitOp program_unit,
     mlir::Location loc, mlir::Operation* op_for_errors);
-
-/// Build an IntegerSet from a size array: each size-1 entry becomes an equality
-/// constraint (d_i == 0); each size-N entry (N > 1) becomes a range pair
-/// (d_i >= 0, N-1-d_i >= 0).
-mlir::IntegerSet buildIntegerSetFromSizes(mlir::MLIRContext* ctx,
-                                          llvm::ArrayRef<int64_t> sizes);
-
-/// Emit an agen.vector_load that reads all elements of `memref` into a flat
-/// vector.  The insertion point of `rewriter` must be set by the caller.
-mlir::Value emitVectorLoad(mlir::OpBuilder& builder, mlir::Location loc,
-                           mlir::VectorType vec_type, mlir::Value memref);
-
-/// Emit an agen.vector_store that writes `value` into `memref` covering all
-/// elements.  The insertion point of `rewriter` must be set by the caller.
-void emitVectorStore(mlir::OpBuilder& builder, mlir::Location loc,
-                     mlir::Value value, mlir::Value memref);
 
 /// Determine the data transfer type based on source and destination types.
 /// @param src_is_fifo True if source is a FIFO slot, false if memref

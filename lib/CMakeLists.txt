@@ -17,6 +17,7 @@ add_subdirectory(Utils)
 set(mlir_dialect_libs
   MLIRAffineDialect
   MLIRArithDialect
+  MLIRBufferizationDialect
   MLIRFuncDialect
   MLIRLinalgDialect
   MLIRMathDialect

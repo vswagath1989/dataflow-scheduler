@@ -27,6 +27,7 @@
 #include <mlir/IR/BuiltinTypeInterfaces.h>
 #include <mlir/IR/Matchers.h>
 
+#include "dataflow-scheduler/Conversion/Utils/Utils.h"
 #include "dataflow-scheduler/Conversion/backend/ScheduleIRToDFIR/KTDFLowToDFIR/Utils.h"
 #include "dataflow-scheduler/Dialect/Agen/Agen.h"
 #include "dataflow-scheduler/Dialect/Dataflow/Dataflow.h"
@@ -268,19 +269,37 @@ struct LowerLinalgGenericPattern
     }
 
     // Replace input block arguments with their corresponding linalg ins
-    // operands.
+    // operands.  The body's ops become vectorchain ops, so each operand has to
+    // reach them as a vector.
+    //
+    // A buffer is read with agen.vector_load, the same way an accumulator is
+    // below.  An input arrives as a buffer when a device pattern materialized
+    // one, which is also what wrote the values being read here.
+    //
+    // A buffer that a ktdf.read_from_fifo hands out is the exception: it holds
+    // no address, and LowerReadFromFifoPattern replaces that read with the
+    // vector a dataflow.receive yields.  Loading from it would only be undone
+    // when that replacement rewrites the load's own operand.
     unsigned num_inputs = generic_op.getNumDpsInputs();
+    rewriter.setInsertionPoint(generic_op);
     for (auto [block_arg, input] :
          llvm::zip(body.getArguments().take_front(num_inputs),
-                   generic_op.getDpsInputs()))
-      rewriter.replaceAllUsesWith(block_arg, input);
+                   generic_op.getDpsInputs())) {
+      mlir::Value operand = input;
+      auto memref_type = mlir::dyn_cast<mlir::MemRefType>(input.getType());
+      if (memref_type && !input.getDefiningOp<mlir::ktdf::ReadFromFifoOp>()) {
+        mlir::VectorType vec_type = getFlattenedVectorType(memref_type);
+        if (!vec_type) return mlir::failure();
+        operand = scheduler::emitVectorLoad(rewriter, loc, vec_type, input);
+      }
+      rewriter.replaceAllUsesWith(block_arg, operand);
+    }
 
     // Each output block argument is the accumulator value the matching memref
     // holds. Read each into a vector and let the body read that instead. There
     // is one per result: a compute that accumulates more than one thing
     // accumulates into two.
     llvm::SmallVector<mlir::Value> out_memrefs;
-    rewriter.setInsertionPoint(generic_op);
     for (unsigned r = 0; r < accumulators; ++r) {
       mlir::Value out_memref = generic_op.getDpsInitOperand(r)->get();
       out_memrefs.push_back(out_memref);

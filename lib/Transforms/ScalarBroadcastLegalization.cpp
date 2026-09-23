@@ -34,6 +34,7 @@
 #include "dataflow-scheduler/Analysis/Mapping.h"
 #include "dataflow-scheduler/Analysis/Utils.h"
 #include "dataflow-scheduler/Dialect/KTDF/KTDF.h"
+#include "dataflow-scheduler/Dialect/KTDF/Utils/Utils.h"
 #include "dataflow-scheduler/Dialect/KTDFArch/Analysis/DeviceManager.h"
 #include "dataflow-scheduler/Dialect/KTDFArch/Analysis/NodeLinks.h"
 #include "dataflow-scheduler/Dialect/KTDFArch/Analysis/ResourceKinds.h"
@@ -476,18 +477,12 @@ static void applyTransformation(const BroadcastLegalizationSite& site,
       }
 
       // Update static_source_sizes last dim.
-      auto src_sizes_opt = hop.transfer.getStaticSourceSizesArray();
-      if (src_sizes_opt) {
-        llvm::SmallVector<int64_t> new_src_static(*src_sizes_opt);
-        new_src_static.back() = site.vector_width;
-        hop.transfer.setStaticSourceSizes(
-            llvm::ArrayRef<int64_t>(new_src_static));
-      }
+      mlir::ktdf::setInnermostStaticSourceSize(hop.transfer, site.vector_width);
     } else {
       // FIFO hop: mark with transfer_mode="splat", widen the slot it splats
       // into, and say so on the transfer. The source stays the one element that
       // arrives; it is the destination that is filled.
-      hop.transfer->setAttr("transfer_mode", builder.getStringAttr("splat"));
+      mlir::ktdf::markSplatTransfer(hop.transfer);
       widenFifoSlot(hop.transfer.getDestination(), site.vector_width, builder);
 
       auto dest_sizes_opt = hop.transfer.getStaticDestSizesArray();
