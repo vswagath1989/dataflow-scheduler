@@ -924,7 +924,7 @@ struct LowerDataTransferPattern
   /// Lower as vector_load and send (local memory to FIFO).
   ///
   /// `load_elements` is the number of source elements the load reads.  For a
-  /// splat that is the arch-aligned load width SplatAnnotationPass widened
+  /// splat that is the arch-aligned load width SplatLegalizationPass legalized
   /// `src_static_sizes` to, and the load is broadcast from it to the
   /// destination width.
   mlir::LogicalResult lowerAsLoadAndSend(

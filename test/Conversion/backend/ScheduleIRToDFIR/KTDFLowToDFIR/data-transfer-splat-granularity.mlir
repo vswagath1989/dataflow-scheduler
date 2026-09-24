@@ -1,4 +1,4 @@
-// RUN: dataflow-scheduler-opt -pass-pipeline="builtin.module(splat-annotation,ktdflowering-to-dfir)" -allow-unregistered-dialect %s | FileCheck %s
+// RUN: dataflow-scheduler-opt -pass-pipeline="builtin.module(splat-legalization,ktdflowering-to-dfir)" -allow-unregistered-dialect %s | FileCheck %s
 
 // Verify hardware-aware splat widening for f32 on the send side.
 //
@@ -17,7 +17,7 @@
 //   (src_static_sizes=[1]) yields effective_sizes=[2] with the same logic.
 //
 // Receive side — the shuffle the splat mode names.  A widened load leaves one
-// live element per sub-SIMD group, so the read SplatAnnotationPass marked lowers
+// live element per sub-SIMD group, so the read SplatLegalizationPass marked lowers
 // to the receive plus a shuffle spreading the first lane of each group across
 // it.  The group width is the compute unit's sub_simd_lanes, which sample_device
 // declares as 8 for f32, so eight zero indices repeat eight times over the 64

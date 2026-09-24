@@ -19,7 +19,7 @@ add_dataflow_scheduler_library(DataflowSchedulerTransforms
     ParallelizeLoopsAcrossInstances.cpp
     PathExpansion.cpp
     ScalarBroadcastLegalization.cpp
-    SplatAnnotationPass.cpp
+    SplatLegalizationPass.cpp
     StripMineSCFForLoops.cpp
     TileSCFForLoops.cpp
 

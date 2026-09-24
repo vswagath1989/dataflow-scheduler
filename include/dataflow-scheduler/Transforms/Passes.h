@@ -58,7 +58,7 @@ std::unique_ptr<mlir::Pass> createAddressAssignmentPass(
     const SchedulerExtContext& scheduler_ctx);
 std::unique_ptr<mlir::Pass> createScalarBroadcastLegalizationPass();
 std::unique_ptr<mlir::Pass> createIndirectAddrBufFillLegalizationPass();
-std::unique_ptr<mlir::Pass> createSplatAnnotationPass();
+std::unique_ptr<mlir::Pass> createSplatLegalizationPass();
 std::unique_ptr<mlir::Pass> createCustomSchedulerBufferizationPass();
 std::unique_ptr<mlir::Pass> createEnsureDeviceDeclarationPass();
 

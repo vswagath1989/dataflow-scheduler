@@ -354,8 +354,8 @@ def IndirectAddrBufFillLegalizationPass
   ];
 }
 
-def SplatAnnotationPass : Pass<"splat-annotation", "mlir::ModuleOp"> {
-  let summary = "Widen splat data_transfer loads and name the shuffle that finishes them";
+def SplatLegalizationPass : Pass<"splat-legalization", "mlir::ModuleOp"> {
+  let summary = "Legalize splat data_transfer loads and name the shuffle that finishes them";
   let description = [{
     Runs after ScalarBroadcastLegalizationPass and records, in the IR, that a
     splat the hardware cannot perform in one step has been left half done.
@@ -368,14 +368,14 @@ def SplatAnnotationPass : Pass<"splat-annotation", "mlir::ModuleOp"> {
       2. Calls computeSplatGranularityElements to derive the effective load
          width from the load unit's access_granularity arch attribute.
       3. When that width exceeds the source element count -- when the hardware
-         really does have to load more than was asked for -- widens the
+         really does have to load more than was asked for -- legalizes the
          innermost static_source_sizes dimension to it.  The size operand
          carries the load width, so no attribute is emitted for it.
       4. In that same case, sets
          splat = #ktdf.splat<first_subsimd_lane_to_all_subsimd_lanes> on each
          consuming ktdf.read_from_fifo.
 
-    A widened load splats the granule it read, not the single element: every
+    A legalized load splats the granule it read, not the single element: every
     sub-SIMD group ends up holding one live element instead of the whole vector
     holding one.  The splat mode says so, and names the shuffle that closes the
     gap; it is the pass's durable output.
@@ -386,7 +386,7 @@ def SplatAnnotationPass : Pass<"splat-annotation", "mlir::ModuleOp"> {
     patterns ["post_scheduling"] block.  This pass queries the arch for the load
     width and nothing else.
   }];
-  let constructor = "::scheduler::createSplatAnnotationPass()";
+  let constructor = "::scheduler::createSplatLegalizationPass()";
   let dependentDialects = [
     "mlir::ktdf::KTDFDialect"
   ];

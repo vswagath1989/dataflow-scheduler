@@ -1,6 +1,6 @@
-// RUN: dataflow-scheduler-opt --splat-annotation %s | FileCheck %s
+// RUN: dataflow-scheduler-opt --splat-legalization %s | FileCheck %s
 
-// Verify that SplatAnnotationPass widens a splat load to the arch's access
+// Verify that SplatLegalizationPass legalizes a splat load to the arch's access
 // granularity and marks the reads a sub-SIMD splat still has to finish.
 //
 // The LXLU / SFP naming used in production is mapped to the sample_device

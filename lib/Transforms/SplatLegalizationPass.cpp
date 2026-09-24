@@ -16,7 +16,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// SplatAnnotation: widen splat data_transfer loads to the arch's load
+// SplatLegalization: legalize splat data_transfer loads to the arch's load
 // granularity, and name the shuffle that finishes the splat on the reads.
 //
 // A load unit that cannot splat a single element at its access granularity
@@ -47,15 +47,15 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Pass/Pass.h"
 
-#define PASS_NAME "splat-annotation"
+#define PASS_NAME "splat-legalization"
 #define DEBUG_TYPE PASS_NAME
 
 static llvm::cl::opt<bool> DisableThisPass(
-    "disable-" PASS_NAME, llvm::cl::desc("Disable the Splat Annotation pass"),
+    "disable-" PASS_NAME, llvm::cl::desc("Disable the Splat Legalization pass"),
     llvm::cl::init(false));
 
 namespace scheduler {
-#define GEN_PASS_DEF_SPLATANNOTATIONPASS
+#define GEN_PASS_DEF_SPLATLEGALIZATIONPASS
 #include "dataflow-scheduler/Transforms/Passes.h.inc"
 }  // namespace scheduler
 
@@ -80,11 +80,11 @@ scheduler::ResourceType resolveLoadUnitKind(mlir::Operation* op) {
       .value_or(scheduler::ResourceType{});
 }
 
-/// Widen `transfer`'s load to the arch's access granularity and name, on every
-/// read of it, the shuffle that finishes the splat.  A no-op when the
+/// Legalize `transfer`'s load to the arch's access granularity and name, on
+/// every read of it, the shuffle that finishes the splat.  A no-op when the
 /// granularity is no wider than the source, i.e. when the hardware can splat
 /// what was asked for as it stands.
-mlir::LogicalResult annotateSplatTransfer(
+mlir::LogicalResult legalizeSplatTransfer(
     mlir::ktdf::DataTransferOp transfer,
     const mlir::ktdf_arch::ResourceKinds& resource_kinds) {
   scheduler::ResourceType load_unit_kind = resolveLoadUnitKind(transfer);
@@ -114,17 +114,17 @@ mlir::LogicalResult annotateSplatTransfer(
   // The hardware can splat the source as it stands: nothing to record.
   if (load_elements <= src_elements) return mlir::success();
 
-  LDBG(1) << "widening splat load from " << src_elements << " to "
+  LDBG(1) << "legalizing splat load from " << src_elements << " to "
           << load_elements << " elements for " << transfer;
 
   // The size operand carries the load width, so the lowering pass reads it
   // straight off the transfer and no extra attribute is needed for it.
   mlir::ktdf::setInnermostStaticSourceSize(transfer, load_elements);
 
-  // A widened load leaves one live element per sub-SIMD group rather than one
-  // for the whole vector.  Name the shuffle that closes that gap on every read
-  // of the slot; the lowering to DFIR emits it right after the receive, with
-  // the group width coming from the compute unit's sub_simd_lanes.
+  // A legalized load leaves one live element per sub-SIMD group rather than
+  // one for the whole vector.  Name the shuffle that closes that gap on every
+  // read of the slot; the lowering to DFIR emits it right after the receive,
+  // with the group width coming from the compute unit's sub_simd_lanes.
   mlir::Value fifo_slot = transfer.getDestination();
   for (mlir::Operation* user : fifo_slot.getUsers()) {
     auto read_op = mlir::dyn_cast<mlir::ktdf::ReadFromFifoOp>(user);
@@ -136,8 +136,8 @@ mlir::LogicalResult annotateSplatTransfer(
   return mlir::success();
 }
 
-struct SplatAnnotationPass
-    : public scheduler::impl::SplatAnnotationPassBase<SplatAnnotationPass> {
+struct SplatLegalizationPass
+    : public scheduler::impl::SplatLegalizationPassBase<SplatLegalizationPass> {
   void runOnOperation() override {
     if (DisableThisPass) return;
     LDBG(1) << "========= " PASS_NAME " =========";
@@ -160,7 +160,7 @@ struct SplatAnnotationPass
         module_op.walk([&](mlir::ktdf::DataTransferOp transfer) {
           if (!transfer.isDestFifo() || !mlir::ktdf::isSplatTransfer(transfer))
             return mlir::WalkResult::advance();
-          return mlir::failed(annotateSplatTransfer(transfer, resource_kinds))
+          return mlir::failed(legalizeSplatTransfer(transfer, resource_kinds))
                      ? mlir::WalkResult::interrupt()
                      : mlir::WalkResult::advance();
         });
@@ -171,6 +171,6 @@ struct SplatAnnotationPass
 
 }  // namespace
 
-std::unique_ptr<mlir::Pass> scheduler::createSplatAnnotationPass() {
-  return std::make_unique<SplatAnnotationPass>();
+std::unique_ptr<mlir::Pass> scheduler::createSplatLegalizationPass() {
+  return std::make_unique<SplatLegalizationPass>();
 }
