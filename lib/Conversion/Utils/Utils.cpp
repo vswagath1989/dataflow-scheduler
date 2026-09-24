@@ -154,30 +154,28 @@ struct WholeBufferAccess {
   mlir::AffineMap map;
   mlir::IntegerSet set;
   llvm::SmallVector<mlir::Value> indices;
+
+  WholeBufferAccess(mlir::OpBuilder& builder, mlir::Location loc,
+                    mlir::Value memref) {
+    auto memref_type = mlir::cast<mlir::MemRefType>(memref.getType());
+    const unsigned rank = memref_type.getRank();
+    mlir::MLIRContext* ctx = builder.getContext();
+
+    if (rank > 0)
+      indices.assign(
+          rank,
+          mlir::arith::ConstantIndexOp::create(builder, loc, 0).getResult());
+
+    map = mlir::AffineMap::getMultiDimIdentityMap(rank, ctx);
+    set = buildIntegerSetFromSizes(ctx, memref_type.getShape());
+  }
 };
-
-WholeBufferAccess wholeBufferAccess(mlir::OpBuilder& builder,
-                                    mlir::Location loc, mlir::Value memref) {
-  auto memref_type = mlir::cast<mlir::MemRefType>(memref.getType());
-  const unsigned rank = memref_type.getRank();
-  mlir::MLIRContext* ctx = builder.getContext();
-
-  llvm::SmallVector<mlir::Value> indices;
-  if (rank > 0)
-    indices.assign(
-        rank,
-        mlir::arith::ConstantIndexOp::create(builder, loc, 0).getResult());
-
-  return {mlir::AffineMap::getMultiDimIdentityMap(rank, ctx),
-          buildIntegerSetFromSizes(ctx, memref_type.getShape()),
-          std::move(indices)};
-}
 
 }  // namespace
 
 mlir::Value emitVectorLoad(mlir::OpBuilder& builder, mlir::Location loc,
                            mlir::VectorType vec_type, mlir::Value memref) {
-  auto access = wholeBufferAccess(builder, loc, memref);
+  WholeBufferAccess access(builder, loc, memref);
   return mlir::agen::VectorLoadOp::create(builder, loc, vec_type, memref,
                                           /*dbgName=*/nullptr, access.map,
                                           access.indices, access.set,
@@ -187,7 +185,7 @@ mlir::Value emitVectorLoad(mlir::OpBuilder& builder, mlir::Location loc,
 
 void emitVectorStore(mlir::OpBuilder& builder, mlir::Location loc,
                      mlir::Value value, mlir::Value memref) {
-  auto access = wholeBufferAccess(builder, loc, memref);
+  WholeBufferAccess access(builder, loc, memref);
   mlir::agen::VectorStoreOp::create(builder, loc, value, memref,
                                     /*dbgName=*/nullptr, access.map,
                                     access.indices, access.set, access.map);

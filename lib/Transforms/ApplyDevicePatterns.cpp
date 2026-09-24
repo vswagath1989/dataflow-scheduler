@@ -253,7 +253,7 @@ auto ktdfMemRefReadFromFifo(mlir::PatternRewriter& rewriter,
     return mlir::failure();
   }
 
-  results.push_back(mlir::ktdf::tensorReadFromFifoToMemref(rewriter, read));
+  results.push_back(mlir::ktdf::convertFromTensorToMemref(rewriter, read));
   return mlir::success();
 }
 

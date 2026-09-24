@@ -90,7 +90,7 @@ auto setInnermostStaticSourceSize(ktdf::DataTransferOp transfer, int64_t size)
 ///     Data operand is reassigned in-place to the memref replacement.
 ///
 ///   `ktdf.read_from_fifo` (tensor result)
-///     Re-emitted as a memref-typed read via `tensorReadFromFifoToMemref`, so
+///     Re-emitted as a memref-typed read via `convertFromTensorToMemref`, so
 ///     downstream users see the memref.  The original op is erased.
 ///
 ///   Any other op
@@ -132,8 +132,8 @@ auto convertTensorUsesToMemref(
 /// \param builder  OpBuilder positioned at the desired insertion point.
 /// \param read_op  The tensor-typed read_from_fifo to convert.
 /// \return         The memref-typed result Value of the new read.
-auto tensorReadFromFifoToMemref(mlir::OpBuilder& builder,
-                                ktdf::ReadFromFifoOp read_op) -> mlir::Value;
+auto convertFromTensorToMemref(mlir::OpBuilder& builder,
+                               ktdf::ReadFromFifoOp read_op) -> mlir::Value;
 
 /// Clone the body and attributes of `generic_op` into a new buffer-semantics
 /// `linalg.generic` that operates entirely on memrefs.

@@ -202,7 +202,7 @@ auto mlir::ktdf::convertTensorUsesToMemref(
       if (!isa<RankedTensorType>(read.getResult().getType())) continue;
 
       builder.setInsertionPoint(read);
-      Value new_read = tensorReadFromFifoToMemref(builder, read);
+      Value new_read = convertFromTensorToMemref(builder, read);
       subst[read.getResult()] = new_read;
       read.getResult().replaceAllUsesWith(new_read);
       op->erase();
@@ -222,8 +222,8 @@ auto mlir::ktdf::convertTensorUsesToMemref(
   return success();
 }
 
-auto mlir::ktdf::tensorReadFromFifoToMemref(OpBuilder& builder,
-                                            ktdf::ReadFromFifoOp read_op)
+auto mlir::ktdf::convertFromTensorToMemref(OpBuilder& builder,
+                                           ktdf::ReadFromFifoOp read_op)
     -> Value {
   auto tensor_type = cast<RankedTensorType>(read_op.getResult().getType());
   auto memref_type =

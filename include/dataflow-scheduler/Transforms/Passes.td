@@ -533,7 +533,6 @@ def ApplyDevicePatternsPass : Pass<"apply-device-patterns", "mlir::func::FuncOp"
     "mlir::memref::MemRefDialect",
     "mlir::pdl::PDLDialect",
     "mlir::pdl_interp::PDLInterpDialect",
-    "mlir::spyreop::SpyreOpDialect",
     "mlir::vectorchain::VectorChainDialect"
   ];
 }

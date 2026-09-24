@@ -24,8 +24,6 @@
 // consumer's operands or drop its results.  This pass finishes what the pattern
 // could not express.
 //
-// See docs/passes.md for algorithm documentation.
-//
 //===----------------------------------------------------------------------===//
 
 #include <memory>
@@ -118,7 +116,7 @@ static mlir::LogicalResult absorbIntoConsumer(
           "cannot absorb bufferization.to_tensor: a tensor input of the "
           "consuming linalg.generic is not a ktdf.read_from_fifo, so there is "
           "no buffer to give it");
-    buffers[input] = mlir::ktdf::tensorReadFromFifoToMemref(builder, read_op);
+    buffers[input] = mlir::ktdf::convertFromTensorToMemref(builder, read_op);
     noteProducer(input);
   }
 

@@ -26,8 +26,6 @@
 // itself is emitted by the lowering to DFIR, and where the buffer it works on
 // lives is the device's to say through its patterns.
 //
-// See docs/passes.md for algorithm documentation.
-//
 //===----------------------------------------------------------------------===//
 
 #include <functional>

@@ -3,9 +3,6 @@
 // Verify that SplatLegalizationPass legalizes a splat load to the arch's access
 // granularity and marks the reads a sub-SIMD splat still has to finish.
 //
-// The LXLU / SFP naming used in production is mapped to the sample_device
-// equivalents L1LU / SFU so this test is self-contained.
-//
 // === f32 case ===
 // L1LU word_size=1 byte, access_granularity for "L1": [64, 8, 2] words.
 // For f32 (4 bytes/elem): elem_words=4, min_words=4*1=4, fitAccess(4)->8 words

@@ -279,7 +279,7 @@ static LogicalResult lowerIterArgInitializer(Value init_val, Value alloc_val,
   // ── Case: ktdf.read_from_fifo returning a tensor ──────────────────────────
   if (auto read_op = dyn_cast<ktdf::ReadFromFifoOp>(defining_op)) {
     OpBuilder builder(read_op);
-    Value new_read = ktdf::tensorReadFromFifoToMemref(builder, read_op);
+    Value new_read = ktdf::convertFromTensorToMemref(builder, read_op);
     memref::CopyOp::create(builder, read_op.getLoc(), new_read, alloc_val);
     read_op->erase();
     return success();
@@ -506,7 +506,7 @@ static LogicalResult rewriteGeneric(
   auto orig_read =
       generic_op.getInputs()[0].getDefiningOp<ktdf::ReadFromFifoOp>();
   assert(orig_read && "rewriteGeneric: input[0] must be a ktdf.read_from_fifo");
-  Value new_read = ktdf::tensorReadFromFifoToMemref(builder, orig_read);
+  Value new_read = ktdf::convertFromTensorToMemref(builder, orig_read);
 
   // Step 6: pure-buffer linalg.generic — memref ins + memref outs, no result.
   ktdf::cloneLinalgGenericAsBufferOp(
@@ -1046,7 +1046,7 @@ struct MapReductionPartialsPass
               generic_op.getInputs()[0].getDefiningOp<ktdf::ReadFromFifoOp>()) {
         OpBuilder builder(generic_op);
         stale_tensor_read = read_op;
-        Value new_read = ktdf::tensorReadFromFifoToMemref(builder, read_op);
+        Value new_read = ktdf::convertFromTensorToMemref(builder, read_op);
         generic_op.getInputsMutable().assign(new_read);
       }
       // Find the combine before rewriteInnerDimGeneric erases generic_op.
